@@ -1,92 +1,24 @@
-use crate::components::{MobileSummaryBar, MugControls, TemperatureDisplay};
-use crate::physics::{simulate_cooling, CoolingDataPoint, MugParameters};
-use crate::storage::{load_settings, material_to_string, save_settings, StoredSettings};
+use crate::components::{ComparePanel, HeatEquationPanel, LumpedPanel};
+use crate::storage::SharedSettings;
 use leptos::*;
-
-/// Find when coffee crosses below a threshold temperature (interpolated)
-fn find_crossing_time(data: &[CoolingDataPoint], threshold: f64) -> Option<f64> {
-    for i in 1..data.len() {
-        let prev = &data[i - 1];
-        let curr = &data[i];
-        if prev.coffee_temp_c >= threshold && curr.coffee_temp_c < threshold {
-            // Linear interpolation
-            let t = (threshold - prev.coffee_temp_c) / (curr.coffee_temp_c - prev.coffee_temp_c);
-            return Some(prev.time_minutes + t);
-        }
-    }
-    // Never crossed - stays above threshold for entire duration
-    data.last().map(|p| p.time_minutes)
-}
+use leptos_router::{A, use_query_map};
 
 #[component]
 pub fn App() -> impl IntoView {
-    // Load saved settings
-    let saved = load_settings();
+    let settings = SharedSettings::instance();
+    let active_tab = settings.active_tab;
 
-    // Mug parameters as signals (initialized from storage)
-    let (material, set_material) = create_signal(saved.material_enum());
-    let (volume_ml, set_volume_ml) = create_signal(saved.volume_ml);
-    let (wall_thickness_mm, set_wall_thickness_mm) = create_signal(saved.wall_thickness_mm);
-    let (coffee_temp_c, set_coffee_temp_c) = create_signal(saved.coffee_temp_c);
-    let (room_temp_c, set_room_temp_c) = create_signal(saved.room_temp_c);
-    let (min_drinkable_c, set_min_drinkable_c) = create_signal(saved.min_drinkable_c);
-    let (use_fahrenheit, set_use_fahrenheit) = create_signal(saved.use_fahrenheit);
-    let (duration_minutes, set_duration_minutes) = create_signal(saved.duration_minutes);
-    let (preheat_temp_c, set_preheat_temp_c) = create_signal(saved.preheat_temp_c);
-
-    // Save settings whenever any value changes
+    // Reactively track ?tab= query parameter — works for both direct loads
+    // and SPA navigation (the route view may be kept alive, so we can't rely
+    // on the component body re-running).
+    let query = use_query_map();
     create_effect(move |_| {
-        let settings = StoredSettings {
-            material: material_to_string(material.get()),
-            volume_ml: volume_ml.get(),
-            wall_thickness_mm: wall_thickness_mm.get(),
-            coffee_temp_c: coffee_temp_c.get(),
-            room_temp_c: room_temp_c.get(),
-            min_drinkable_c: min_drinkable_c.get(),
-            use_fahrenheit: use_fahrenheit.get(),
-            duration_minutes: duration_minutes.get(),
-            preheat_temp_c: preheat_temp_c.get(),
-        };
-        save_settings(&settings);
-    });
-
-    // Compute temperature curves for comparison
-    // Always simulate for max duration (120 min) so metrics aren't clamped by chart duration
-    const MAX_SIMULATION_MINUTES: usize = 120;
-
-    let cooling_data_cold = create_memo(move |_| {
-        let params = MugParameters {
-            material: material.get(),
-            volume_ml: volume_ml.get(),
-            wall_thickness_mm: wall_thickness_mm.get(),
-            coffee_temp_c: coffee_temp_c.get(),
-            room_temp_c: room_temp_c.get(),
-            preheated: false,
-            preheat_temp_c: preheat_temp_c.get(),
-        };
-        simulate_cooling(&params, MAX_SIMULATION_MINUTES)
-    });
-
-    let cooling_data_hot = create_memo(move |_| {
-        let params = MugParameters {
-            material: material.get(),
-            volume_ml: volume_ml.get(),
-            wall_thickness_mm: wall_thickness_mm.get(),
-            coffee_temp_c: coffee_temp_c.get(),
-            room_temp_c: room_temp_c.get(),
-            preheated: true,
-            preheat_temp_c: preheat_temp_c.get(),
-        };
-        simulate_cooling(&params, MAX_SIMULATION_MINUTES)
-    });
-
-    // Calculate crossing times for mobile summary bar
-    let crossing_time_cold = create_memo(move |_| {
-        find_crossing_time(&cooling_data_cold.get(), min_drinkable_c.get()).unwrap_or(0.0)
-    });
-
-    let crossing_time_hot = create_memo(move |_| {
-        find_crossing_time(&cooling_data_hot.get(), min_drinkable_c.get()).unwrap_or(0.0)
+        let params = query.get();
+        if let Some(tab) = params.get("tab") {
+            if matches!(tab.as_str(), "lumped" | "heat_equation" | "compare") {
+                active_tab.set(tab.to_string());
+            }
+        }
     });
 
     view! {
@@ -112,65 +44,46 @@ pub fn App() -> impl IntoView {
 
             <section class="interactive">
                 <h2>"Try It Yourself"</h2>
-                <div class="model-container">
-                    <MugControls
-                        material=material
-                        set_material=set_material
-                        volume_ml=volume_ml
-                        set_volume_ml=set_volume_ml
-                        wall_thickness_mm=wall_thickness_mm
-                        set_wall_thickness_mm=set_wall_thickness_mm
-                        coffee_temp_c=coffee_temp_c
-                        set_coffee_temp_c=set_coffee_temp_c
-                        preheat_temp_c=preheat_temp_c
-                        set_preheat_temp_c=set_preheat_temp_c
-                        room_temp_c=room_temp_c
-                        set_room_temp_c=set_room_temp_c
-                        min_drinkable_c=min_drinkable_c
-                        set_min_drinkable_c=set_min_drinkable_c
-                        use_fahrenheit=use_fahrenheit
-                        set_use_fahrenheit=set_use_fahrenheit
-                        set_duration_minutes=set_duration_minutes
-                    />
-                    <TemperatureDisplay
-                        cold_mug_data=cooling_data_cold
-                        hot_mug_data=cooling_data_hot
-                        room_temp=room_temp_c
-                        min_drinkable=min_drinkable_c
-                        use_fahrenheit=use_fahrenheit
-                        duration_minutes=duration_minutes
-                        set_duration_minutes=set_duration_minutes
-                    />
+                <p class="wip-note">
+                    "This is a work in progress. The models use simplified physics (spherical geometry, "
+                    "uniform properties) and may not accurately reflect real-world mug cooling. "
+                    "See "<A href="/theory">"Theory & Models"</A>" for assumptions and limitations."
+                </p>
+                <div class="solver-toggle solver-toggle--3">
+                    <button
+                        class:active=move || active_tab.get() == "lumped"
+                        on:click=move |_| active_tab.set("lumped".to_string())
+                    >"Lumped Capacitance"</button>
+                    <button
+                        class:active=move || active_tab.get() == "heat_equation"
+                        on:click=move |_| active_tab.set("heat_equation".to_string())
+                    >"Heat Equation"</button>
+                    <button
+                        class:active=move || active_tab.get() == "compare"
+                        on:click=move |_| active_tab.set("compare".to_string())
+                    >"Compare"</button>
                 </div>
+                {move || {
+                    let tab = active_tab.get();
+                    match tab.as_str() {
+                        "heat_equation" => view! { <HeatEquationPanel/> }.into_view(),
+                        "compare" => view! { <ComparePanel/> }.into_view(),
+                        _ => view! { <LumpedPanel/> }.into_view(),
+                    }
+                }}
             </section>
 
-            <section class="explanation">
-                <h2>"How It Works"</h2>
-                <div class="physics-cards">
-                    <div class="card">
-                        <h3>"Thermal Mass"</h3>
-                        <p>
-                            "Your mug has thermal mass—it takes energy to change its temperature. "
-                            "A thick ceramic mug has more thermal mass than a thin glass one, "
-                            "meaning it absorbs more heat from your coffee."
-                        </p>
-                    </div>
-                    <div class="card">
-                        <h3>"Heat Transfer"</h3>
-                        <p>
-                            "Heat flows from hot to cold. The bigger the temperature difference "
-                            "between your coffee and the mug, the faster heat transfers. "
-                            "A preheated mug has a smaller temperature gap."
-                        </p>
-                    </div>
-                    <div class="card">
-                        <h3>"Newton's Law of Cooling"</h3>
-                        <p>
-                            "The rate of heat loss is proportional to the temperature difference "
-                            "with the environment. As your coffee approaches room temperature, "
-                            "it cools more slowly."
-                        </p>
-                    </div>
+            <section class="learn-more">
+                <h2>"Learn More"</h2>
+                <div class="learn-more-links">
+                    <A href="/theory" class="learn-more-card">
+                        <h3>"Theory & Models"</h3>
+                        <p>"Explore the physics behind the simulation\u{2014}from simple lumped capacitance to analytical eigenfunction solutions."</p>
+                    </A>
+                    <A href="/about" class="learn-more-card">
+                        <h3>"About"</h3>
+                        <p>"The story behind this project and why we built it."</p>
+                    </A>
                 </div>
             </section>
 
@@ -191,11 +104,6 @@ pub fn App() -> impl IntoView {
                     "© 2025"
                 </p>
             </footer>
-
-            <MobileSummaryBar
-                time_cold=crossing_time_cold
-                time_hot=crossing_time_hot
-            />
         </main>
     }
 }

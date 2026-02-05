@@ -1,7 +1,7 @@
 use crate::analytics::track_event;
 use crate::haptics::vibrate_tick;
 use crate::physics::MugMaterial;
-use crate::storage::{c_to_f, f_to_c};
+use crate::storage::{c_to_f, display_temp as fmt_temp, f_to_c, SharedSettings, StoredSettings};
 use leptos::*;
 use std::cell::Cell;
 
@@ -20,32 +20,24 @@ fn track_first_interaction() {
 
 #[component]
 pub fn MugControls(
-    material: ReadSignal<MugMaterial>,
-    set_material: WriteSignal<MugMaterial>,
-    volume_ml: ReadSignal<f64>,
-    set_volume_ml: WriteSignal<f64>,
-    wall_thickness_mm: ReadSignal<f64>,
-    set_wall_thickness_mm: WriteSignal<f64>,
-    coffee_temp_c: ReadSignal<f64>,
-    set_coffee_temp_c: WriteSignal<f64>,
-    preheat_temp_c: ReadSignal<f64>,
-    set_preheat_temp_c: WriteSignal<f64>,
-    room_temp_c: ReadSignal<f64>,
-    set_room_temp_c: WriteSignal<f64>,
-    min_drinkable_c: ReadSignal<f64>,
-    set_min_drinkable_c: WriteSignal<f64>,
-    use_fahrenheit: ReadSignal<bool>,
-    set_use_fahrenheit: WriteSignal<bool>,
-    set_duration_minutes: WriteSignal<usize>,
+    settings: SharedSettings,
+    #[prop(optional)] children: Option<Children>,
+    #[prop(optional, into)] on_reset: Option<Callback<()>>,
 ) -> impl IntoView {
-    // Helper to display temperature in current unit
-    let display_temp = move |c: f64| -> String {
-        if use_fahrenheit.get() {
-            format!("{:.0}°F", c_to_f(c))
-        } else {
-            format!("{:.0}°C", c)
-        }
-    };
+    let (material, set_material) = settings.material.split();
+    let (volume_ml, set_volume_ml) = settings.volume_ml.split();
+    let (wall_thickness_mm, set_wall_thickness_mm) = settings.wall_thickness_mm.split();
+    let (coffee_temp_c, set_coffee_temp_c) = settings.coffee_temp_c.split();
+    let (preheat_temp_c, set_preheat_temp_c) = settings.preheat_temp_c.split();
+    let (room_temp_c, set_room_temp_c) = settings.room_temp_c.split();
+    let (min_drinkable_c, set_min_drinkable_c) = settings.min_drinkable_c.split();
+    let (use_fahrenheit, set_use_fahrenheit) = settings.use_fahrenheit.split();
+    let (h_conv, set_h_conv) = settings.h_conv.split();
+    let (emissivity, set_emissivity) = settings.emissivity.split();
+    let (exposure_pct, set_exposure_pct) = settings.exposure_pct.split();
+    let (duration_minutes, set_duration_minutes) = settings.duration_minutes.split();
+
+    let display_temp = move |c: f64| fmt_temp(c, use_fahrenheit.get());
 
     view! {
         <div class="controls">
@@ -65,6 +57,7 @@ pub fn MugControls(
                             _ => MugMaterial::Ceramic,
                         };
                         set_material.set(mat);
+                        set_emissivity.set(mat.emissivity());
                         track_first_interaction();
                     }
                 >
@@ -120,6 +113,62 @@ pub fn MugControls(
                 />
             </div>
 
+            <div class="control-group">
+                <label for="h-conv">"Convection: " {move || format!("{:.0} W/(m\u{00B2}\u{00B7}K)", h_conv.get())}</label>
+                <input
+                    type="range"
+                    id="h-conv"
+                    min="2"
+                    max="50"
+                    step="1"
+                    prop:value=move || h_conv.get()
+                    on:input=move |ev| {
+                        if let Ok(v) = event_target_value(&ev).parse::<f64>() {
+                            set_h_conv.set(v);
+                            vibrate_tick();
+                        }
+                    }
+                />
+            </div>
+
+            <div class="control-group">
+                <label for="emissivity">"Emissivity: " {move || format!("{:.2}", emissivity.get())}</label>
+                <input
+                    type="range"
+                    id="emissivity"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    prop:value=move || emissivity.get()
+                    on:input=move |ev| {
+                        if let Ok(v) = event_target_value(&ev).parse::<f64>() {
+                            set_emissivity.set(v);
+                            vibrate_tick();
+                        }
+                    }
+                />
+                <span class="control-hint">"0 = no radiation, 1 = perfect blackbody"</span>
+            </div>
+
+            <div class="control-group">
+                <label for="exposure">"Lid opening: " {move || format!("{:.0}%", exposure_pct.get())}</label>
+                <input
+                    type="range"
+                    id="exposure"
+                    min="0"
+                    max="100"
+                    step="5"
+                    prop:value=move || exposure_pct.get()
+                    on:input=move |ev| {
+                        if let Ok(v) = event_target_value(&ev).parse::<f64>() {
+                            set_exposure_pct.set(v);
+                            vibrate_tick();
+                        }
+                    }
+                />
+                <span class="control-hint">"0% = lid on, 100% = fully open"</span>
+            </div>
+
             <div class="control-group-header">
                 <h3>"Temperatures"</h3>
                 <button
@@ -138,7 +187,7 @@ pub fn MugControls(
                 <input
                     type="range"
                     id="coffee-temp"
-                    min=move || if use_fahrenheit.get() { "122" } else { "50" }
+                    min=move || if use_fahrenheit.get() { "32" } else { "0" }
                     max=move || if use_fahrenheit.get() { "212" } else { "100" }
                     step="1"
                     prop:value=move || {
@@ -163,8 +212,8 @@ pub fn MugControls(
                 <input
                     type="range"
                     id="preheat-temp"
-                    min=move || if use_fahrenheit.get() { "122" } else { "50" }
-                    max=move || if use_fahrenheit.get() { "212" } else { "100" }
+                    min=move || if use_fahrenheit.get() { "14" } else { "-10" }
+                    max=move || if use_fahrenheit.get() { "230" } else { "110" }
                     step="1"
                     prop:value=move || {
                         if use_fahrenheit.get() {
@@ -233,17 +282,48 @@ pub fn MugControls(
                 />
             </div>
 
+            <h3>"Simulation"</h3>
+
+            <div class="control-group">
+                <label for="duration">"Duration: " {move || format!("{} min", duration_minutes.get())}</label>
+                <input
+                    type="range"
+                    id="duration"
+                    min="10"
+                    max="120"
+                    step="5"
+                    prop:value=move || duration_minutes.get()
+                    on:input=move |ev| {
+                        if let Ok(v) = event_target_value(&ev).parse::<usize>() {
+                            set_duration_minutes.set(v);
+                            vibrate_tick();
+                            track_first_interaction();
+                        }
+                    }
+                />
+            </div>
+
+            {children.map(|c| c())}
+
             <button
                 class="reset-button"
                 on:click=move |_| {
-                    set_material.set(MugMaterial::Ceramic);
-                    set_volume_ml.set(180.0);
-                    set_wall_thickness_mm.set(5.0);
-                    set_coffee_temp_c.set(90.0);
-                    set_preheat_temp_c.set(90.0);
-                    set_room_temp_c.set(22.0);
-                    set_min_drinkable_c.set(60.0);
-                    set_duration_minutes.set(60);
+                    let d = StoredSettings::default();
+                    set_material.set(d.material_enum());
+                    set_volume_ml.set(d.volume_ml);
+                    set_wall_thickness_mm.set(d.wall_thickness_mm);
+                    set_coffee_temp_c.set(d.coffee_temp_c);
+                    set_preheat_temp_c.set(d.preheat_temp_c);
+                    set_room_temp_c.set(d.room_temp_c);
+                    set_min_drinkable_c.set(d.min_drinkable_c);
+                    set_h_conv.set(d.h_conv);
+                    set_emissivity.set(d.emissivity);
+                    set_exposure_pct.set(d.exposure_pct);
+                    set_duration_minutes.set(d.duration_minutes);
+                    // Preserve the user's F/C preference across resets
+                    if let Some(cb) = on_reset {
+                        cb.call(());
+                    }
                 }
             >
                 "Reset to defaults"

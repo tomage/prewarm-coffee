@@ -36,6 +36,76 @@ body {
   position: relative;
 }
 
+/* Global link styling */
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* Navigation bar */
+.site-nav {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-secondary);
+}
+
+.site-nav-inner {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 0.75rem var(--spacing);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.nav-brand {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.nav-brand:hover {
+  text-decoration: none;
+  opacity: 0.85;
+}
+
+.nav-links {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.nav-link {
+  font-size: 0.95rem;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.nav-link:hover {
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.nav-link.active {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+@media (max-width: 600px) {
+  .site-nav-inner {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .nav-links {
+    gap: 1rem;
+  }
+}
+
 /* Subtle coffee bean texture overlay */
 body::before {
   content: "";
@@ -105,6 +175,7 @@ header h1 {
   color: var(--color-text-muted);
   font-size: 1.1rem;
 }
+
 
 /* Sections */
 section {
@@ -197,21 +268,6 @@ section h2 {
   cursor: pointer;
 }
 
-.control-group.checkbox {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.control-group.checkbox input {
-  width: 20px;
-  height: 20px;
-  accent-color: var(--color-primary);
-}
-
-.control-group.checkbox label {
-  margin-bottom: 0;
-}
 
 .control-group-header {
   display: flex;
@@ -259,6 +315,69 @@ section h2 {
 .reset-button:hover {
   color: var(--color-text);
   border-color: var(--color-text-muted);
+}
+
+/* Work-in-progress note */
+.wip-note {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+
+
+/* Solver Toggle */
+.solver-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-bottom: 1rem;
+}
+
+.solver-toggle button {
+  padding: 0.35rem 0.75rem;
+  background: transparent;
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-secondary);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.solver-toggle button:first-child {
+  border-radius: var(--radius) 0 0 var(--radius);
+  border-right: none;
+}
+
+.solver-toggle button:nth-child(2) {
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+/* 3-button solver toggle (home page tab selector) */
+.solver-toggle--3 button:first-child {
+  border-radius: var(--radius) 0 0 var(--radius);
+  border-right: none;
+}
+
+.solver-toggle--3 button:nth-child(2) {
+  border-radius: 0;
+  border-right: none;
+}
+
+.solver-toggle--3 button:nth-child(3) {
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.solver-toggle button.active {
+  background: var(--color-primary);
+  color: var(--color-bg);
+  border-color: var(--color-primary);
+}
+
+.solver-toggle .compute-time {
+  margin-left: 0.75rem;
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
 }
 
 /* Temperature Display */
@@ -623,14 +742,6 @@ footer .analytics-note {
   margin-bottom: 0.5rem;
 }
 
-footer a {
-  color: var(--color-primary);
-  text-decoration: none;
-}
-
-footer a:hover {
-  text-decoration: underline;
-}
 
 /* Mobile sticky summary bar */
 .mobile-summary {
@@ -726,3 +837,1583 @@ footer a:hover {
     cursor: pointer;
   }
 }
+
+/* Details link on main page */
+.details-link {
+  text-align: center;
+  margin-top: 1.5rem;
+}
+
+.details-link a {
+  font-size: 0.95rem;
+}
+
+/* Details Page Styles */
+.details-page .back-nav {
+  margin-bottom: 2rem;
+}
+
+.details-page .back-nav.bottom {
+  margin-top: 2rem;
+  margin-bottom: 1rem;
+}
+
+.details-page .back-nav a {
+  font-size: 0.9rem;
+}
+
+.physics-detail {
+  background: var(--color-surface);
+  padding: 1.5rem;
+  border-radius: var(--radius);
+  margin-bottom: 1.5rem;
+}
+
+.physics-detail h2 {
+  color: var(--color-primary);
+  margin-bottom: 1rem;
+  font-size: 1.3rem;
+}
+
+.physics-detail h3 {
+  color: var(--color-text);
+  margin: 1.25rem 0 0.5rem;
+  font-size: 1rem;
+}
+
+.physics-detail p {
+  color: var(--color-text-muted);
+  margin-bottom: 0.75rem;
+  line-height: 1.7;
+}
+
+.physics-detail ul {
+  color: var(--color-text-muted);
+  margin-left: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.physics-detail li {
+  margin-bottom: 0.5rem;
+  line-height: 1.6;
+}
+
+
+.formula {
+  background: var(--color-bg);
+  padding: 1rem 1.5rem;
+  border-radius: var(--radius);
+  margin: 1rem 0;
+  text-align: center;
+  border-left: 3px solid var(--color-primary);
+  overflow-x: auto;
+}
+
+.formula code {
+  font-size: 1.1rem;
+  color: var(--color-text);
+  font-family: "SF Mono", Monaco, "Cascadia Code", monospace;
+}
+
+.formula .katex-display {
+  margin: 0;
+}
+
+.formula .katex {
+  color: var(--color-text);
+}
+
+.formula-explanation {
+  font-size: 0.9rem;
+}
+
+.formula-explanation code {
+  background: var(--color-bg);
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.85rem;
+  color: var(--color-primary);
+}
+
+.formula-explanation .katex,
+.physics-detail p .katex,
+.heat-flow p .katex {
+  color: var(--color-primary);
+}
+
+.heat-flow {
+  margin: 1.5rem 0;
+  padding-left: 1rem;
+  border-left: 2px solid var(--color-secondary);
+}
+
+.heat-flow h3 {
+  margin-top: 0;
+}
+
+/* Materials table */
+.materials-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.9rem;
+}
+
+.materials-table th,
+.materials-table td {
+  padding: 0.75rem;
+  text-align: center;
+  border-bottom: 1px solid var(--color-secondary);
+}
+
+.materials-table th {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.materials-table th .unit {
+  display: block;
+  font-weight: normal;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.materials-table td {
+  color: var(--color-text-muted);
+}
+
+.materials-table td:first-child {
+  text-align: left;
+  color: var(--color-text);
+}
+
+.materials-table tbody tr:hover {
+  background: var(--color-bg);
+}
+
+.physics-detail .note {
+  font-size: 0.85rem;
+  font-style: italic;
+  margin-top: 1rem;
+}
+
+/* DES Page (Heat Equation) Styles */
+.des-page .des-intro,
+.des-page .des-equation,
+.des-page .des-boundary,
+.des-page .des-simulation,
+.des-page .des-numerical,
+.des-page .des-observations {
+  background: var(--color-surface);
+  padding: 1.5rem;
+  border-radius: var(--radius);
+  margin-bottom: 1.5rem;
+}
+
+.des-page h2 {
+  color: var(--color-primary);
+  margin-bottom: 1rem;
+  font-size: 1.3rem;
+}
+
+.des-page p {
+  color: var(--color-text-muted);
+  margin-bottom: 0.75rem;
+  line-height: 1.7;
+}
+
+.des-page strong {
+  color: var(--color-text);
+}
+
+.des-page .formula.large code {
+  font-size: 1.3rem;
+}
+
+.des-page .formula.small {
+  padding: 0.5rem 1rem;
+  margin: 0.5rem 0;
+}
+
+.des-page .formula.small code {
+  font-size: 0.95rem;
+}
+
+/* Material properties grid */
+.material-props {
+  margin-top: 1.5rem;
+}
+
+.material-props h3 {
+  color: var(--color-text);
+  margin-bottom: 1rem;
+  font-size: 1rem;
+}
+
+.props-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.prop-card {
+  background: var(--color-bg);
+  padding: 1rem;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--color-primary);
+}
+
+.prop-card h4 {
+  color: var(--color-text);
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.prop-card ul {
+  list-style: none;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.prop-card li {
+  margin-bottom: 0.25rem;
+}
+
+.prop-card strong {
+  color: var(--color-primary);
+}
+
+/* Simulation layout - sticky sidebar */
+.sim-layout {
+  display: flex;
+  gap: 2rem;
+  align-items: flex-start;
+}
+
+.sim-content {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Simulation controls */
+.sim-controls {
+  position: sticky;
+  top: 1rem;
+  width: 240px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  background: var(--color-bg);
+  border-radius: var(--radius);
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+}
+
+.sim-controls h3 {
+  color: var(--color-text);
+  font-size: 0.9rem;
+  margin: 0.25rem 0 0 0;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--color-secondary);
+}
+
+@media (max-width: 900px) {
+  .sim-layout {
+    flex-direction: column;
+  }
+
+  .sim-controls {
+    position: static;
+    width: 100%;
+    max-height: none;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  }
+}
+
+/* PDE controls — horizontal grid above charts */
+.pde-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.75rem;
+  padding: 1rem;
+  background: var(--color-bg);
+  border-radius: var(--radius);
+  margin-bottom: 1.5rem;
+}
+
+.pde-controls .control-group {
+  margin-bottom: 0;
+}
+
+.pde-controls label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.pde-controls input[type="range"] {
+  width: 100%;
+  -webkit-appearance: none;
+  height: 6px;
+  background: var(--color-secondary);
+  border-radius: 3px;
+}
+
+.pde-controls input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  background: var(--color-primary);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.des-page .sim-controls .control-group,
+.details-page .sim-controls .control-group {
+  margin-bottom: 0;
+}
+
+.des-page .sim-controls label,
+.details-page .sim-controls label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.des-page .sim-controls input[type="range"],
+.details-page .sim-controls input[type="range"] {
+  width: 100%;
+  -webkit-appearance: none;
+  height: 6px;
+  background: var(--color-secondary);
+  border-radius: 3px;
+}
+
+.des-page .sim-controls input[type="range"]::-webkit-slider-thumb,
+.details-page .sim-controls input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  background: var(--color-primary);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.reset-group {
+  margin-top: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--color-secondary);
+}
+
+.reset-button {
+  width: 100%;
+  padding: 0.5rem 1rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  background: var(--color-surface);
+  border: 1px solid var(--color-secondary);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.reset-button:hover {
+  color: var(--color-text);
+  background: var(--color-bg);
+  border-color: var(--color-primary);
+}
+
+/* Simulation visualizations */
+.sim-viz {
+  margin-bottom: 1.5rem;
+}
+
+.sim-viz h3 {
+  color: var(--color-text);
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.time-slider {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: var(--color-bg);
+  border-radius: var(--radius);
+}
+
+.time-slider label {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  min-width: 80px;
+}
+
+.time-slider input[type="range"] {
+  flex: 1;
+  -webkit-appearance: none;
+  height: 6px;
+  background: var(--color-secondary);
+  border-radius: 3px;
+}
+
+.time-slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  background: var(--color-drinkable);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+/* Profile chart */
+.profile-chart,
+.time-chart {
+  width: 100%;
+  background: var(--color-surface);
+  border-radius: var(--radius);
+}
+
+.profile-chart .axis-label,
+.time-chart .axis-label {
+  fill: var(--color-text-muted);
+  font-size: 10px;
+}
+
+.temp-profile-line {
+  fill: none;
+  stroke: var(--color-hot);
+  stroke-width: 2.5;
+}
+
+.temp-profile-line.initial {
+  stroke: var(--color-text-muted);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  opacity: 0.4;
+}
+
+/* Hover elements */
+.hover-line {
+  stroke: var(--color-text);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+  opacity: 0.5;
+}
+
+.hover-dot {
+  fill: var(--color-primary);
+  stroke: var(--color-text);
+  stroke-width: 2;
+}
+
+.hover-text {
+  fill: var(--color-text);
+  font-size: 11px;
+  font-weight: 500;
+  pointer-events: none;
+}
+
+.legend-label {
+  fill: var(--color-text);
+  font-size: 9px;
+}
+
+.chart-legend {
+  pointer-events: none;
+}
+
+.time-chart .temp-line {
+  fill: none;
+  stroke-width: 2;
+}
+
+.time-chart .temp-line.center {
+  stroke: var(--color-hot);
+}
+
+.time-chart .temp-line.average {
+  stroke: var(--color-cold);
+  stroke-dasharray: 6 3;
+}
+
+/* Legends */
+.profile-legend,
+.time-legend {
+  display: flex;
+  justify-content: center;
+  gap: 1.5rem;
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.time-legend .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.time-legend .legend-item::before {
+  content: "";
+  width: 20px;
+  height: 3px;
+  display: inline-block;
+}
+
+.time-legend .legend-item.center::before {
+  background: var(--color-hot);
+}
+
+.time-legend .legend-item.average::before {
+  background: var(--color-cold);
+  background: repeating-linear-gradient(
+    to right,
+    var(--color-cold) 0px,
+    var(--color-cold) 6px,
+    transparent 6px,
+    transparent 9px
+  );
+}
+
+.time-legend .legend-item.marker::before {
+  background: var(--color-drinkable);
+  height: 12px;
+  width: 3px;
+}
+
+/* Stats */
+.sim-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.sim-stats .stat {
+  text-align: center;
+  padding: 1rem;
+  background: var(--color-bg);
+  border-radius: var(--radius);
+}
+
+.sim-stats .stat-value {
+  display: block;
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: var(--color-hot);
+  margin-bottom: 0.25rem;
+}
+
+.sim-stats .stat-label {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+/* Observations list */
+.des-observations ul {
+  list-style: none;
+  color: var(--color-text-muted);
+}
+
+.des-observations li {
+  margin-bottom: 1rem;
+  padding-left: 1rem;
+  border-left: 2px solid var(--color-secondary);
+}
+
+.des-observations li strong {
+  color: var(--color-primary);
+}
+
+/* Numerical section */
+.des-numerical p {
+  margin-bottom: 0.5rem;
+}
+
+/* Region colors */
+.region-list {
+  list-style: none;
+  margin: 1rem 0;
+}
+
+.region-list li {
+  margin-bottom: 0.5rem;
+  padding-left: 0;
+}
+
+.region {
+  display: inline-block;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-weight: 600;
+  margin-right: 0.5rem;
+}
+
+.region.liquid {
+  background: var(--color-cold);
+  color: var(--color-bg);
+}
+
+.region.shell {
+  background: var(--color-primary);
+  color: var(--color-bg);
+}
+
+.region.air {
+  background: var(--color-text-muted);
+  color: var(--color-bg);
+}
+
+/* Property cards with region colors */
+.prop-card.liquid {
+  border-left-color: var(--color-cold);
+}
+
+.prop-card.shell {
+  border-left-color: var(--color-primary);
+}
+
+.prop-card.air {
+  border-left-color: var(--color-text-muted);
+}
+
+/* Control labels with colors */
+.liquid-label {
+  color: var(--color-cold) !important;
+}
+
+.shell-label {
+  color: var(--color-primary) !important;
+}
+
+.air-label {
+  color: var(--color-text-muted) !important;
+}
+
+.exposure-label {
+  color: var(--color-drinkable) !important;
+}
+
+.evaporation-label {
+  color: var(--color-hot) !important;
+}
+
+.convection-label {
+  color: var(--color-text-muted) !important;
+}
+
+/* Disabled control groups (solver-specific sliders) */
+.control-group.disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.control-group.disabled input[type="range"]::-webkit-slider-thumb {
+  background: var(--color-text-muted);
+  cursor: default;
+}
+
+.control-group.disabled input[type="range"]::-moz-range-thumb {
+  background: var(--color-text-muted);
+  cursor: default;
+}
+
+.control-hint {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+  margin-top: 0.25rem;
+  opacity: 0.7;
+}
+
+.control-hint.model-note {
+  font-style: italic;
+  opacity: 0.6;
+  margin-top: 0.5rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--color-text-muted);
+}
+
+/* Profile legend */
+.profile-legend .legend-item.liquid::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  background: var(--color-cold);
+  opacity: 0.3;
+  margin-right: 0.25rem;
+}
+
+.profile-legend .legend-item.shell::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  background: var(--color-secondary);
+  opacity: 0.5;
+  margin-right: 0.25rem;
+}
+
+.profile-legend .legend-item.air::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-secondary);
+  margin-right: 0.25rem;
+}
+
+.profile-legend .legend-item.initial::before {
+  content: "";
+  display: inline-block;
+  width: 20px;
+  height: 2px;
+  background: repeating-linear-gradient(
+    to right,
+    var(--color-text-muted) 0px,
+    var(--color-text-muted) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+  opacity: 0.5;
+  margin-right: 0.25rem;
+}
+
+/* Time chart lines */
+.time-chart .temp-line.liquid-center {
+  stroke: var(--color-cold);
+  stroke-width: 2.5;
+}
+
+.time-chart .temp-line.liquid-avg {
+  stroke: var(--color-cold);
+  stroke-width: 2;
+  stroke-dasharray: 6 3;
+  opacity: 0.7;
+}
+
+.time-chart .temp-line.shell-avg {
+  stroke: var(--color-primary);
+  stroke-width: 2;
+}
+
+/* Time legend updates */
+.time-legend .legend-item.liquid-center::before {
+  background: var(--color-cold);
+}
+
+.time-legend .legend-item.liquid-avg::before {
+  background: repeating-linear-gradient(
+    to right,
+    var(--color-cold) 0px,
+    var(--color-cold) 6px,
+    transparent 6px,
+    transparent 9px
+  );
+}
+
+.time-legend .legend-item.shell-avg::before {
+  background: var(--color-primary);
+}
+
+/* Stats with region colors */
+.sim-stats--4col {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.sim-stats .stat.liquid .stat-value {
+  color: var(--color-cold);
+}
+
+.sim-stats .stat.shell .stat-value {
+  color: var(--color-primary);
+}
+
+.sim-stats .stat.ambient .stat-value {
+  color: var(--color-text-muted);
+}
+
+@media (max-width: 600px) {
+  .sim-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+}
+
+
+/* Two equation boxes side by side */
+.two-equations {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.equation-box {
+  background: var(--color-surface);
+  padding: 1rem;
+  border-radius: var(--radius);
+  text-align: center;
+}
+
+.equation-box h4 {
+  margin-bottom: 0.75rem;
+  color: var(--color-primary);
+}
+
+.equation-box .solution {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--color-secondary);
+  color: var(--color-drinkable);
+  font-weight: 500;
+}
+
+.equation-box .formula {
+  margin: 0.5rem 0;
+}
+
+/* Region diagram */
+.region-diagram {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.region-box {
+  padding: 1rem;
+  border-radius: var(--radius);
+  text-align: center;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.region-box.liquid {
+  background: rgba(106, 159, 212, 0.2);
+  border: 1px solid var(--color-cold);
+}
+
+.region-box.shell {
+  background: rgba(196, 149, 106, 0.2);
+  border: 1px solid var(--color-primary);
+}
+
+.region-box.air {
+  background: rgba(168, 144, 128, 0.2);
+  border: 1px solid var(--color-text-muted);
+}
+
+.region-box code {
+  display: block;
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+/* Interface conditions */
+.interface-conditions {
+  background: var(--color-surface);
+  padding: 1rem 1.5rem;
+  border-radius: var(--radius);
+  margin: 1rem 0;
+}
+
+.interface-conditions .condition {
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--color-secondary);
+}
+
+.interface-conditions .condition:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.interface-conditions strong {
+  color: var(--color-primary);
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.interface-conditions code {
+  color: var(--color-text);
+  background: var(--color-bg);
+  padding: 0.2rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.9rem;
+}
+
+/* Key insight box */
+.key-insight {
+  background: rgba(139, 196, 122, 0.1);
+  border: 2px solid var(--color-drinkable);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  margin: 1.5rem 0;
+}
+
+.key-insight h4 {
+  color: var(--color-drinkable);
+  margin-bottom: 0.75rem;
+  font-size: 1rem;
+}
+
+.key-insight p {
+  margin-bottom: 0.75rem;
+}
+
+.key-insight p:last-child {
+  margin-bottom: 0;
+}
+
+/* Interpretation list */
+.interpretation-list {
+  list-style: none;
+  margin-left: 0;
+}
+
+.interpretation-list li {
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.5rem;
+  background: var(--color-surface);
+  border-radius: var(--radius);
+}
+
+.interpretation-list strong {
+  color: var(--color-primary);
+}
+
+/* Summary box */
+.summary-box {
+  background: var(--color-surface);
+  padding: 1.5rem;
+  border-radius: var(--radius);
+}
+
+.summary-box h4 {
+  color: var(--color-primary);
+  margin-bottom: 0.75rem;
+  margin-top: 1rem;
+}
+
+.summary-box h4:first-child {
+  margin-top: 0;
+}
+
+.summary-box ul {
+  margin-left: 1.25rem;
+}
+
+.summary-box li {
+  margin-bottom: 0.5rem;
+  color: var(--color-text-muted);
+}
+
+.summary-box code {
+  color: var(--color-text);
+  font-size: 0.9em;
+}
+
+/* References section */
+.references ul {
+  list-style: none;
+  margin-left: 0;
+}
+
+.references li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--color-secondary);
+}
+
+.references li:last-child {
+  border-bottom: none;
+}
+
+.references em {
+  color: var(--color-primary);
+  font-style: normal;
+}
+
+/* Responsive adjustments */
+@media (max-width: 600px) {
+  .two-equations {
+    grid-template-columns: 1fr;
+  }
+
+  .region-diagram {
+    grid-template-columns: 1fr;
+  }
+
+}
+
+/* Shared info card / chart section styles */
+
+.info-card {
+  background: var(--color-bg);
+  padding: 1rem;
+  border-radius: var(--radius);
+  text-align: center;
+}
+
+.info-card h4 {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.info-card .big-number {
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: var(--color-primary);
+  margin-bottom: 0.25rem;
+}
+
+.info-card .info-label {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  font-family: monospace;
+}
+
+.mode-label {
+  color: var(--color-text-muted);
+}
+
+.chart-section {
+  background: var(--color-surface);
+  padding: 1rem;
+  border-radius: var(--radius);
+}
+
+.chart-section h4 {
+  font-size: 0.9rem;
+  color: var(--color-text);
+  margin-bottom: 0.75rem;
+  text-align: center;
+}
+
+.chart-section .time-slider {
+  margin-bottom: 0.75rem;
+}
+
+.chart-section .time-slider input {
+  width: 100%;
+}
+
+/* ========================================
+   Three-Region Simulator Styles
+   ======================================== */
+
+.three-region-sim {
+  margin-top: 3rem;
+  padding-top: 2rem;
+  border-top: 2px solid var(--color-drinkable);
+}
+
+.three-region-controls {
+  background: var(--color-surface);
+  padding: 1.5rem;
+  border-radius: var(--radius);
+  margin-bottom: 1.5rem;
+}
+
+.three-region-controls .control-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.three-region-controls .control-row:last-child {
+  margin-bottom: 0;
+}
+
+.three-region-controls .control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.three-region-controls label {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.three-region-controls input[type="range"] {
+  width: 100%;
+  -webkit-appearance: none;
+  height: 6px;
+  background: var(--color-secondary);
+  border-radius: 3px;
+}
+
+.three-region-controls input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  background: var(--color-drinkable);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.three-region-info {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.three-region-info .info-card {
+  background: var(--color-bg);
+  padding: 1rem;
+  border-radius: var(--radius);
+  text-align: center;
+}
+
+.three-region-info .info-card h4 {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.three-region-info .big-number {
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: var(--color-drinkable);
+  margin-bottom: 0.25rem;
+}
+
+.three-region-info .info-label {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  font-family: monospace;
+}
+
+.eigenvalue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+  font-size: 0.8rem;
+}
+
+.eigenvalue-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.2rem 0;
+  border-bottom: 1px solid var(--color-secondary);
+}
+
+.eigenvalue-list li:last-child {
+  border-bottom: none;
+}
+
+.mode-value {
+  color: var(--color-drinkable);
+  font-family: monospace;
+}
+
+.three-region-charts {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.three-region-charts .chart-section {
+  background: var(--color-surface);
+  padding: 1rem;
+  border-radius: var(--radius);
+}
+
+.three-region-charts .chart-section h4 {
+  font-size: 0.9rem;
+  color: var(--color-text);
+  margin-bottom: 0.75rem;
+  text-align: center;
+}
+
+.three-region-chart {
+  width: 100%;
+  height: auto;
+}
+
+.three-region-chart .axis-label {
+  font-size: 10px;
+  fill: var(--color-text-muted);
+}
+
+.three-region-chart .region-label {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.three-region-notes {
+  background: var(--color-surface);
+  padding: 1rem 1.5rem;
+  border-radius: var(--radius);
+  margin-bottom: 1.5rem;
+}
+
+.three-region-notes h4 {
+  color: var(--color-drinkable);
+  margin-bottom: 0.5rem;
+}
+
+.three-region-notes ul {
+  margin-left: 1.25rem;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.three-region-notes li {
+  margin-bottom: 0.5rem;
+  line-height: 1.5;
+}
+
+/* Three-region responsive */
+@media (max-width: 700px) {
+  .three-region-controls .control-row {
+    grid-template-columns: 1fr;
+  }
+
+  .three-region-info {
+    grid-template-columns: 1fr;
+  }
+
+  .three-region-charts {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ========================================
+   Learn More Section (Home Page)
+   ======================================== */
+
+.learn-more-links {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.learn-more-card {
+  display: block;
+  background: var(--color-surface);
+  padding: 1.5rem;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--color-primary);
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.learn-more-card:hover {
+  border-left-color: var(--color-text);
+  background: var(--color-secondary);
+  text-decoration: none;
+}
+
+.learn-more-card h3 {
+  color: var(--color-primary);
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.learn-more-card p {
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+@media (max-width: 600px) {
+  .learn-more-links {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ========================================
+   About Page Styles
+   ======================================== */
+
+.about-page .back-nav {
+  margin-bottom: 2rem;
+}
+
+.about-page .back-nav.bottom {
+  margin-top: 2rem;
+  margin-bottom: 1rem;
+}
+
+.about-page .back-nav a {
+  font-size: 0.9rem;
+}
+
+.about-section {
+  background: var(--color-surface);
+  padding: 1.5rem;
+  border-radius: var(--radius);
+  margin-bottom: 1.5rem;
+}
+
+.about-section h2 {
+  color: var(--color-primary);
+  margin-bottom: 1rem;
+  font-size: 1.3rem;
+}
+
+.about-section p {
+  color: var(--color-text-muted);
+  margin-bottom: 0.75rem;
+  line-height: 1.7;
+}
+
+.about-section p:last-child {
+  margin-bottom: 0;
+}
+
+
+.version-history dt {
+  font-weight: 600;
+  color: var(--color-primary);
+  margin-top: 1rem;
+}
+
+.version-date {
+  font-size: 0.8em;
+  font-style: italic;
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
+.version-history dt:first-child {
+  margin-top: 0;
+}
+
+.version-history dd {
+  margin-left: 0;
+}
+
+.version-history ul {
+  margin: 0.25rem 0 0 1.25rem;
+  padding: 0;
+  color: var(--color-text-muted);
+  line-height: 1.7;
+}
+
+/* ========================================
+   Theory Page Styles
+   ======================================== */
+
+.theory-page .back-nav {
+  margin-bottom: 2rem;
+}
+
+.theory-page .back-nav.bottom {
+  margin-top: 2rem;
+  margin-bottom: 1rem;
+}
+
+.theory-page .back-nav a {
+  font-size: 0.9rem;
+}
+
+.theory-intro {
+  margin-bottom: 2rem;
+  padding: 1.5rem;
+  background: var(--color-surface);
+  border-radius: var(--radius);
+  border-left: 4px solid var(--color-primary);
+}
+
+.theory-intro p {
+  color: var(--color-text-muted);
+  line-height: 1.7;
+  margin: 0;
+}
+
+.theory-section {
+  background: var(--color-surface);
+  padding: 1.5rem;
+  border-radius: var(--radius);
+  margin-bottom: 1.5rem;
+}
+
+.theory-section h2 {
+  color: var(--color-primary);
+  margin-bottom: 1rem;
+  font-size: 1.3rem;
+}
+
+.theory-section p {
+  color: var(--color-text-muted);
+  margin-bottom: 0.75rem;
+  line-height: 1.7;
+}
+
+.theory-section p:last-child {
+  margin-bottom: 0;
+}
+
+
+.theory-link {
+  margin-top: 1rem;
+}
+
+.theory-link a {
+  font-weight: 500;
+}
+
+/* ========================================
+   Compare Panel Styles
+   ======================================== */
+
+/* Compare chart line styles */
+.temp-chart .temp-line.lumped-analytical {
+  stroke: var(--color-cold);
+  stroke-width: 2;
+}
+
+.temp-chart .temp-line.lumped-numerical {
+  stroke: var(--color-cold);
+  stroke-width: 2;
+  stroke-dasharray: 4 3;
+}
+
+.temp-chart .temp-line.heateq-analytical {
+  stroke: var(--color-hot);
+  stroke-width: 2;
+}
+
+.temp-chart .temp-line.heateq-numerical {
+  stroke: var(--color-hot);
+  stroke-width: 2;
+  stroke-dasharray: 4 3;
+}
+
+/* Compare panel — don't let chart stretch to fill all vertical space */
+.compare-panel .chart-placeholder {
+  flex: none;
+}
+
+.compare-panel .temp-chart {
+  max-height: 250px;
+}
+
+/* Compare legend */
+.compare-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem 1.25rem;
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.compare-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.compare-swatch {
+  display: inline-block;
+  width: 20px;
+  height: 3px;
+}
+
+.compare-swatch.lumped-analytical {
+  background: var(--color-cold);
+}
+
+.compare-swatch.lumped-numerical {
+  background: repeating-linear-gradient(
+    to right,
+    var(--color-cold) 0px,
+    var(--color-cold) 4px,
+    transparent 4px,
+    transparent 7px
+  );
+}
+
+.compare-swatch.heateq-analytical {
+  background: var(--color-hot);
+}
+
+.compare-swatch.heateq-numerical {
+  background: repeating-linear-gradient(
+    to right,
+    var(--color-hot) 0px,
+    var(--color-hot) 4px,
+    transparent 4px,
+    transparent 7px
+  );
+}
+
+/* Compare stats table */
+.compare-stats {
+  margin-top: 1rem;
+}
+
+.compare-stats table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.compare-stats th,
+.compare-stats td {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--color-secondary);
+}
+
+.compare-stats th {
+  color: var(--color-text-muted);
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.compare-stats td {
+  color: var(--color-text);
+}
+
+.compare-stats .lumped-a-row td:first-child,
+.compare-stats .lumped-n-row td:first-child {
+  color: var(--color-cold);
+}
+
+.compare-stats .heateq-a-row td:first-child,
+.compare-stats .heateq-n-row td:first-child {
+  color: var(--color-hot);
+}
+
+.compare-stats td:last-child {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+/* ========================================
+   Accessibility
+   ======================================== */
+
+/* Focus-visible styles for keyboard navigation */
+button:focus-visible,
+select:focus-visible,
+input[type="range"]:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+

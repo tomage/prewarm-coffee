@@ -38,6 +38,16 @@ impl MugMaterial {
         }
     }
 
+    /// Emissivity (dimensionless, 0–1)
+    pub fn emissivity(&self) -> f64 {
+        match self {
+            MugMaterial::Ceramic => 0.90,
+            MugMaterial::Glass => 0.92,
+            MugMaterial::StainlessSteel => 0.10,
+            MugMaterial::Plastic => 0.90,
+        }
+    }
+
     /// Display name
     pub fn name(&self) -> &'static str {
         match self {
@@ -59,6 +69,14 @@ pub struct MugParameters {
     pub room_temp_c: f64,
     pub preheated: bool,
     pub preheat_temp_c: f64,
+    /// Convective heat transfer coefficient in W/(m²·K).
+    /// Typical range: 5–25 for natural convection in air.
+    pub h_conv: f64,
+    /// Surface emissivity (0–1). Defaults to material value but can be overridden.
+    pub emissivity: f64,
+    /// Lid opening fraction (0.0–1.0). 0 = lid on, 1 = fully open.
+    /// Controls evaporation, top-surface convection, and radiation from the coffee surface.
+    pub exposure_pct: f64,
 }
 
 impl MugParameters {
@@ -97,21 +115,31 @@ impl MugParameters {
         coffee_mass_kg * 4186.0
     }
 
-    /// Surface area for heat loss (approximate) in m²
-    pub fn surface_area_m2(&self) -> f64 {
+    /// Top (open coffee) surface area in m²
+    pub fn top_surface_area_m2(&self) -> f64 {
+        let inner_volume_m3 = self.volume_ml * 1e-6;
+        let inner_radius_m = (inner_volume_m3 / (2.0 * std::f64::consts::PI)).powf(1.0 / 3.0);
+        std::f64::consts::PI * inner_radius_m.powi(2)
+    }
+
+    /// Outer mug surface area (side + bottom) in m²
+    pub fn outer_surface_area_m2(&self) -> f64 {
         let inner_volume_m3 = self.volume_ml * 1e-6;
         let inner_radius_m = (inner_volume_m3 / (2.0 * std::f64::consts::PI)).powf(1.0 / 3.0);
         let height_m = 2.0 * inner_radius_m;
         let wall_m = self.wall_thickness_mm * 1e-3;
         let outer_radius_m = inner_radius_m + wall_m;
 
-        // Side surface + top (open) + bottom
         let side = 2.0 * std::f64::consts::PI * outer_radius_m * height_m;
-        let top = std::f64::consts::PI * inner_radius_m.powi(2); // coffee surface
         let bottom = std::f64::consts::PI * outer_radius_m.powi(2);
-
-        side + top + bottom
+        side + bottom
     }
+
+    /// Total surface area for heat loss (approximate) in m²
+    pub fn surface_area_m2(&self) -> f64 {
+        self.top_surface_area_m2() + self.outer_surface_area_m2()
+    }
+
 }
 
 #[cfg(test)]
@@ -128,6 +156,9 @@ mod tests {
             room_temp_c: 22.0,
             preheated: false,
             preheat_temp_c: 90.0,
+            h_conv: 10.0,
+            emissivity: MugMaterial::Ceramic.emissivity(),
+            exposure_pct: 0.2,
         };
 
         let mass = params.mug_mass_kg();

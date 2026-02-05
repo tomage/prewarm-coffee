@@ -6,8 +6,34 @@
     <title>Prewarm - Why Preheating Your Mug Keeps Coffee Warmer</title>
     <link data-trunk rel="css" href="static/styles.css">
     <script defer src="https://cloud.umami.is/script.js" data-website-id="664c99fa-7059-4b3e-b96d-0ec4d6c11bb2"></script>
+    <!-- KaTeX -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
+    <script>
+    document.addEventListener("DOMContentLoaded", function() {
+        var timer = null;
+        function render() {
+            if (typeof renderMathInElement === "function") {
+                renderMathInElement(document.body, {
+                    delimiters: [
+                        {left: "\\[", right: "\\]", display: true},
+                        {left: "\\(", right: "\\)", display: false}
+                    ],
+                    throwOnError: false
+                });
+            }
+        }
+        var observer = new MutationObserver(function() {
+            clearTimeout(timer);
+            timer = setTimeout(render, 100);
+        });
+        observer.observe(document.body, {childList: true, subtree: true});
+        render();
+    });
+    </script>
 </head>
 <body>
-    <link data-trunk rel="rust" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory" />
+    <link data-trunk rel="rust" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory --enable-nontrapping-float-to-int" />
 </body>
 </html>

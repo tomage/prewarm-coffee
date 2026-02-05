@@ -1,3 +1,10 @@
 # Rust related
 /target/
+/target-test/
 /dist/
+/dist-test/
+
+# Node / Playwright
+node_modules/
+test-results/
+playwright-report/
