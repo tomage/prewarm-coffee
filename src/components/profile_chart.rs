@@ -292,9 +292,9 @@ pub fn ProfileChart(
                 <g class="chart-legend" transform="translate(405, 28)">
                     <rect x="-6" y="-6" width="72" height="60" fill="var(--color-surface)" opacity="0.85" rx="3"/>
                     <rect x="0" y="0" width="12" height="8" fill="var(--color-cold)" opacity="0.4"/>
-                    <text x="16" y="7" class="legend-label">"Liquid"</text>
+                    <text x="16" y="7" class="legend-label">"Coffee"</text>
                     <rect x="0" y="14" width="12" height="8" fill="var(--color-secondary)" opacity="0.6"/>
-                    <text x="16" y="21" class="legend-label">"Shell"</text>
+                    <text x="16" y="21" class="legend-label">"Mug"</text>
                     <text x="0" y="35" fill="var(--color-text-muted)" font-size="9">"Air (outside)"</text>
                     <line x1="0" y1="44" x2="16" y2="44" stroke="var(--color-primary)" stroke-width="1" opacity="0.5"/>
                     <text x="20" y="47" class="legend-label">"t=0"</text>
@@ -333,7 +333,7 @@ pub fn ProfileChart(
         <div class="sim-stats sim-stats--4col">
             <div class="stat liquid">
                 <span class="stat-value">{move || { let v = current_snapshot.get().temperatures[0]; if use_fahrenheit.get() { format!("{:.1}\u{00B0}F", c_to_f(v)) } else { format!("{:.1}\u{00B0}C", v) } }}</span>
-                <span class="stat-label">"Liquid center"</span>
+                <span class="stat-label">"Coffee center"</span>
             </div>
             <div class="stat liquid">
                 <span class="stat-value">{move || {
@@ -352,7 +352,7 @@ pub fn ProfileChart(
                     let v = snap.temperatures[mid];
                     if use_fahrenheit.get() { format!("{:.1}\u{00B0}F", c_to_f(v)) } else { format!("{:.1}\u{00B0}C", v) }
                 }}</span>
-                <span class="stat-label">"Shell mid"</span>
+                <span class="stat-label">"Mug mid"</span>
             </div>
             <div class="stat shell">
                 <span class="stat-value">{move || {

@@ -54,7 +54,15 @@ pub fn AboutPage() -> impl IntoView {
             <section class="about-section">
                 <h2>"Version History"</h2>
                 <dl class="version-history">
-                    <dt>"v2 \u{2014} Current " <span class="version-date">"February 8, 2026"</span></dt>
+                    <dt>"v3 \u{2014} Current " <span class="version-date">"February 28, 2026"</span></dt>
+                    <dd>
+                        <ul>
+                            <li>"Expanded and refactored lumped analytical and numerical solvers"</li>
+                            <li>"Extensive cross-solver test coverage (~900 lines)"</li>
+                            <li>"Tuned cooling rates to better match real-world behavior"</li>
+                        </ul>
+                    </dd>
+                    <dt>"v2 " <span class="version-date">"February 4, 2026"</span></dt>
                     <dd>
                         <ul>
                             <li>"Added a heat-equation model: 3-region PDE across liquid, mug wall, and air"</li>
@@ -62,7 +70,7 @@ pub fn AboutPage() -> impl IntoView {
                             <li>"Interactive profile charts, comparison metrics, and theory pages"</li>
                         </ul>
                     </dd>
-                    <dt>"v1 \u{2014} Initial release " <span class="version-date">"February 4, 2026"</span></dt>
+                    <dt>"v1 \u{2014} Initial release " <span class="version-date">"January 26, 2026"</span></dt>
                     <dd>
                         <ul>
                             <li>"Single lumped-capacitance numerical solver (forward Euler)"</li>

@@ -41,7 +41,7 @@ pub fn TheoryPage() -> impl IntoView {
                 <h2>"Heat Equation (PDE)"</h2>
                 <p>
                     "A more realistic model: solve the radial heat equation in spherical coordinates "
-                    "across three regions\u{2014}liquid, mug wall, and surrounding air. "
+                    "across three regions\u{2014}coffee, mug wall, and surrounding air. "
                     "Temperature varies continuously through each layer, not just between them."
                 </p>
                 <p>

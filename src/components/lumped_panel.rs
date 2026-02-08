@@ -316,9 +316,9 @@ pub fn LumpedPanel() -> impl IntoView {
                                 <g class="chart-legend" transform="translate(405, 28)">
                                     <rect x="-6" y="-6" width="72" height="60" fill="var(--color-surface)" opacity="0.85" rx="3"/>
                                     <rect x="0" y="0" width="12" height="8" fill="var(--color-cold)" opacity="0.4"/>
-                                    <text x="16" y="7" class="legend-label">"Liquid"</text>
+                                    <text x="16" y="7" class="legend-label">"Coffee"</text>
                                     <rect x="0" y="14" width="12" height="8" fill="var(--color-secondary)" opacity="0.6"/>
-                                    <text x="16" y="21" class="legend-label">"Shell"</text>
+                                    <text x="16" y="21" class="legend-label">"Mug"</text>
                                     <text x="0" y="35" fill="var(--color-text-muted)" font-size="9">"Air (outside)"</text>
                                     <line x1="0" y1="44" x2="16" y2="44" stroke="var(--color-primary)" stroke-width="1" opacity="0.5"/>
                                     <text x="20" y="47" class="legend-label">"t=0"</text>

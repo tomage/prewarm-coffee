@@ -74,7 +74,13 @@ pub fn ComparisonMetrics(
                         return String::new();
                     }
                     let diff = m.crossing_time_hot - m.crossing_time_cold;
-                    if diff > 0.5 { format!("+{}", format_minutes(diff)) } else { String::new() }
+                    if diff <= 0.5 { return String::new(); }
+                    let pct = if m.crossing_time_cold > 0.5 {
+                        format!(" (+{:.0}%)", diff / m.crossing_time_cold * 100.0)
+                    } else {
+                        String::new()
+                    };
+                    format!("+{}{}", format_minutes(diff), pct)
                 }}</span>
             </div>
         </div>

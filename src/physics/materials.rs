@@ -140,6 +140,14 @@ impl MugParameters {
         self.top_surface_area_m2() + self.outer_surface_area_m2()
     }
 
+    /// Total surface area of bare coffee cylinder (no mug) in m²
+    /// Top + bottom + sides = 2πr² + 2πr×h (with h = 2r → 6πr²)
+    pub fn coffee_surface_area_m2(&self) -> f64 {
+        let inner_volume_m3 = self.volume_ml * 1e-6;
+        let inner_radius_m = (inner_volume_m3 / (2.0 * std::f64::consts::PI)).powf(1.0 / 3.0);
+        6.0 * std::f64::consts::PI * inner_radius_m.powi(2)
+    }
+
 }
 
 #[cfg(test)]

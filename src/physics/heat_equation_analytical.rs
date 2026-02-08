@@ -66,6 +66,16 @@ pub struct ThreeRegionParams {
     /// Convection coefficient at r_max in W/(m²·K)
     /// Used in Robin BC: -k₃ ∂T/∂r = h_eff (T - T_amb) where h_eff = h_conv + k₃/r_max
     pub h_conv: f64,
+    /// Inner surface heat loss coefficient in W/(m²·K)
+    ///
+    /// Models heat lost through the lid opening at r = r_inner.
+    /// Modifies the flux condition from pure continuity to:
+    ///   k₁ ∂T/∂r = k₂ ∂T/∂r + h_inner·(T - T_amb)
+    ///
+    /// Typically h_inner = exposure_fraction × h_eff_exposed, where h_eff_exposed
+    /// includes convection, radiation, and evaporation from the liquid surface.
+    /// Set to 0.0 to disable (pure flux continuity at r_inner).
+    pub h_inner: f64,
 }
 
 impl Default for ThreeRegionParams {
@@ -85,6 +95,7 @@ impl Default for ThreeRegionParams {
             t_ambient: 20.0,
             num_modes: 50,       // More modes for better convergence
             h_conv: 0.0,        // No additional convection (pure conduction)
+            h_inner: 0.0,       // No inner surface heat loss
         }
     }
 }
@@ -93,24 +104,24 @@ impl Default for ThreeRegionParams {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Eigenmode {
     /// The eigenvalue λ
-    lambda: f64,
+    pub(crate) lambda: f64,
     /// Coefficient A (region 1)
-    coeff_a: f64,
+    pub(crate) coeff_a: f64,
     /// Coefficient B (region 2, sin term)
-    coeff_b: f64,
+    pub(crate) coeff_b: f64,
     /// Coefficient C (region 2, cos term)
-    coeff_c: f64,
+    pub(crate) coeff_c: f64,
     /// Pole-free coefficient for region 3 eigenfunction:
     ///   φ₃(r) = D·(gd·sin(β₃r) + gn·cos(β₃r))/r
     /// where gd = cos(β₃R), gn = -sin(β₃R).
     /// This avoids the γ = -tan(β₃R) singularity when cos(β₃R) ≈ 0.
-    coeff_d: f64,
+    pub(crate) coeff_d: f64,
     /// Dirichlet BC numerator: gn = -sin(β₃·r_max)
-    gamma_num: f64,
+    pub(crate) gamma_num: f64,
     /// Dirichlet BC denominator: gd = cos(β₃·r_max)
-    gamma_den: f64,
+    pub(crate) gamma_den: f64,
     /// Expansion coefficient for this mode (from initial conditions)
-    amplitude: f64,
+    pub(crate) amplitude: f64,
 }
 
 /// Result of three-region analytical solution
@@ -141,7 +152,7 @@ fn dirichlet_gamma_polefree(lambda: f64, params: &ThreeRegionParams) -> (f64, f6
 
 /// Compute the determinant of the interface conditions matrix
 /// Returns 0 when λ is an eigenvalue
-fn interface_determinant(lambda: f64, params: &ThreeRegionParams) -> f64 {
+pub(crate) fn interface_determinant(lambda: f64, params: &ThreeRegionParams) -> f64 {
     if lambda <= 0.0 {
         return f64::MAX;
     }
@@ -190,8 +201,11 @@ fn interface_determinant(lambda: f64, params: &ThreeRegionParams) -> f64 {
     let m13 = -c2i;
     let m14 = 0.0;
 
-    // Row 2: flux continuity at r_i
-    let m21 = k_1 * (r_i * beta_1 * c1i - s1i);
+    // Row 2: flux balance at r_i (with optional inner surface heat loss)
+    //   k₁ ∂φ₁/∂r = k₂ ∂φ₂/∂r + h_inner·φ   at r = r_i
+    // Multiplied by r_i²: the h_inner term adds -h_inner·r_i·sin(β₁r_i) to col 1.
+    let h_ri = params.h_inner * r_i;
+    let m21 = k_1 * (r_i * beta_1 * c1i - s1i) - h_ri * s1i;
     let m22 = -k_2 * (r_i * beta_2 * c2i - s2i);
     let m23 = -k_2 * (-r_i * beta_2 * s2i - c2i);
     let m24 = 0.0;
@@ -344,10 +358,12 @@ fn compute_coefficients(lambda: f64, params: &ThreeRegionParams) -> (f64, f64, f
     let c3o = (beta_3 * r_o).cos();
 
     // Condition 1: A s1i = B s2i + C c2i
-    // Condition 2: k₁ A (r_i β₁ c1i - s1i) = k₂ (B (r_i β₂ c2i - s2i) + C (-r_i β₂ s2i - c2i))
+    // Condition 2 (flux + inner surface loss):
+    //   k₁ A (r_i β₁ c1i - s1i) - h_inner·r_i·A·s1i = k₂ (B(...) + C(...))
 
     let rhs1 = a * s1i;
-    let rhs2 = k_1 * a * (r_i * beta_1 * c1i - s1i);
+    let h_ri = params.h_inner * r_i;
+    let rhs2 = k_1 * a * (r_i * beta_1 * c1i - s1i) - h_ri * a * s1i;
 
     let a11 = s2i;
     let a12 = c2i;
@@ -414,7 +430,7 @@ fn thermal_capacity_weight(r: f64, params: &ThreeRegionParams) -> f64 {
 
 /// Analytical integral of ∫ r sin(βr) dr from a to b
 /// Antiderivative: sin(βr)/β² - r cos(βr)/β
-fn integral_r_sin(beta: f64, a: f64, b: f64) -> f64 {
+pub(crate) fn integral_r_sin(beta: f64, a: f64, b: f64) -> f64 {
     let at_b = (beta * b).sin() / (beta * beta) - b * (beta * b).cos() / beta;
     let at_a = (beta * a).sin() / (beta * beta) - a * (beta * a).cos() / beta;
     at_b - at_a
@@ -605,7 +621,13 @@ fn three_region_temperature(r: f64, t: f64, params: &ThreeRegionParams, modes: &
     params.t_ambient + sum
 }
 
-/// Generate a snapshot of the three-region solution
+/// Generate a snapshot of the three-region solution.
+///
+/// The radial grid is uniform with `num_points` entries spanning [0, display_r_max],
+/// but the two nearest grid points are snapped to r_inner and r_outer so that
+/// the interface radii land exactly on grid nodes.  This ensures that
+/// `liquid_average_temperature` (which uses inner_interface_idx) never
+/// accidentally includes a shell-temperature point in the liquid average.
 fn three_region_snapshot(
     t: f64,
     params: &ThreeRegionParams,
@@ -613,9 +635,20 @@ fn three_region_snapshot(
     num_points: usize,
     display_r_max: f64,
 ) -> ThreeRegionSnapshot {
-    let radii: Vec<f64> = (0..num_points)
+    let mut radii: Vec<f64> = (0..num_points)
         .map(|i| i as f64 / (num_points - 1) as f64 * display_r_max)
         .collect();
+
+    // Snap nearest grid points to the exact interface radii.
+    // This prevents liquid_average_temperature from including a shell-temp
+    // point in the liquid region (which causes ~7°C error at t=0 for cold mugs).
+    for &r_iface in &[params.r_inner, params.r_outer] {
+        if let Some((idx, _)) = radii.iter().enumerate().min_by(|(_, a), (_, b)| {
+            (**a - r_iface).abs().partial_cmp(&(**b - r_iface).abs()).unwrap()
+        }) {
+            radii[idx] = r_iface;
+        }
+    }
 
     let temperatures: Vec<f64> = radii
         .iter()
@@ -1445,6 +1478,7 @@ mod tests {
             t_ambient: room_temp,
             num_modes: 50,
             h_conv: h_conv_eff,
+            h_inner: 0.0,
         };
 
         let modes = compute_eigenmodes(&params);

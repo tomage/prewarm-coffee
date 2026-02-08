@@ -15,6 +15,8 @@ async function withErrorTracking(
       // Trunk dev server noise: transient rebuild errors and integrity hash mismatches
       if (text.includes("Build failed")) return;
       if (text.includes("integrity") && text.includes("digest")) return;
+      // GitHub Pages SPA fallback serves 404.html with a 404 status code
+      if (text.includes("status of 404")) return;
       errors.push(`console.error: ${text}`);
     }
   };

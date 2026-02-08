@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 const BASELINES_PATH: &str = "tests/perf-baselines-unit.json";
-const TOLERANCE: f64 = 0.10; // 10%
+const TOLERANCE: f64 = 0.10; // 10% slower → fail
+const SPEEDUP_TOLERANCE: f64 = 0.20; // 20% faster → flag for baseline update
 const ABS_TOLERANCE_MS: f64 = 20.0; // minimum absolute tolerance for fast benchmarks
 const SAMPLE_COUNT_BASELINE: usize = 10;
 const SAMPLE_COUNT_CHECK: usize = 5;
@@ -85,19 +86,33 @@ fn assert_perf(name: &str, measured_ms: f64) {
         return;
     };
 
-    let threshold = f64::max(baseline * (1.0 + TOLERANCE), baseline + ABS_TOLERANCE_MS);
+    let regression_threshold = f64::max(baseline * (1.0 + TOLERANCE), baseline + ABS_TOLERANCE_MS);
+    let speedup_threshold = f64::min(baseline * (1.0 - SPEEDUP_TOLERANCE), baseline - ABS_TOLERANCE_MS);
     let delta = (measured_ms - baseline) / baseline * 100.0;
-    let status = if measured_ms <= threshold { "✓" } else { "✗" };
+    let status = if measured_ms > regression_threshold {
+        "✗ REGRESSION"
+    } else if measured_ms < speedup_threshold {
+        "⚡ SPEEDUP — update baseline with UPDATE_BASELINES=1"
+    } else {
+        "✓"
+    };
     eprintln!(
         "  {name} — baseline: {:.1}ms, measured: {:.1}ms ({:+.1}%) {status}",
         baseline, measured_ms, delta
     );
 
     assert!(
-        measured_ms <= threshold,
+        measured_ms <= regression_threshold,
         "{name} regressed: {:.1}ms vs baseline {:.1}ms ({:+.1}%, threshold {:.1}ms)",
-        measured_ms, baseline, delta, threshold
+        measured_ms, baseline, delta, regression_threshold
     );
+
+    if measured_ms < speedup_threshold {
+        eprintln!(
+            "  ℹ {name} is {:.0}% faster than baseline — consider running UPDATE_BASELINES=1 cargo test",
+            -delta
+        );
+    }
 }
 
 // ─── Lumped capacitance ─────────────────────────────────────────────

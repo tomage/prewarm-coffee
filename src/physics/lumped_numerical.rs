@@ -83,6 +83,12 @@ impl CoolingDataPoint {
 ///
 /// Returns temperature data points, 5 per minute for smooth curves.
 pub fn simulate_lumped_numerical(params: &MugParameters, duration_minutes: usize) -> Vec<CoolingDataPoint> {
+    // Single-body mode: when exposure >= 1.0, there is no mug — coffee is a
+    // free-standing cylinder losing heat from all surfaces.
+    if params.exposure_pct >= 1.0 {
+        return simulate_single_body_numerical(params, duration_minutes);
+    }
+
     let record_interval = 0.2; // Record every 0.2 minutes (12 seconds)
     let mut results = Vec::with_capacity((duration_minutes as f64 / record_interval) as usize + 1);
 
@@ -192,6 +198,69 @@ pub fn simulate_lumped_numerical(params: &MugParameters, duration_minutes: usize
                 time_minutes: next_record,
                 coffee_temp_c: t_coffee,
                 mug_temp_c: t_mug,
+            });
+            next_record += record_interval;
+        }
+    }
+
+    results
+}
+
+/// Single-body numerical simulation: coffee cylinder with no mug.
+/// All surfaces (top + bottom + sides) lose heat via convection, radiation, and evaporation.
+fn simulate_single_body_numerical(params: &MugParameters, duration_minutes: usize) -> Vec<CoolingDataPoint> {
+    let record_interval = 0.2;
+    let mut results = Vec::with_capacity((duration_minutes as f64 / record_interval) as usize + 1);
+
+    let coffee_thermal_mass = params.coffee_thermal_mass();
+    let a_total = params.coffee_surface_area_m2();
+    let a_top = params.top_surface_area_m2(); // evaporation only from liquid-air interface
+    let t_room = params.room_temp_c;
+    let mut t_coffee = params.coffee_temp_c;
+
+    let h_mass = params.h_conv / (RHO_AIR * CP_AIR);
+
+    let dt = 0.01; // 0.6 seconds
+    let dt_seconds = dt * 60.0;
+
+    results.push(CoolingDataPoint {
+        time_minutes: 0.0,
+        coffee_temp_c: t_coffee,
+        mug_temp_c: t_room,
+    });
+
+    let mut time = 0.0;
+    let mut next_record = record_interval;
+
+    while time < duration_minutes as f64 {
+        let t_coffee_k = t_coffee + 273.15;
+        let t_room_k = t_room + 273.15;
+
+        // Convection from all surfaces
+        let q_conv = params.h_conv * a_total * (t_coffee - t_room);
+
+        // Radiation from all surfaces (water emissivity)
+        let q_rad = WATER_EMISSIVITY * STEFAN_BOLTZMANN * a_total
+            * (t_coffee_k.powi(4) - t_room_k.powi(4));
+
+        // Evaporation only from top surface (liquid-air interface)
+        let rho_v_surface = saturation_vapor_pressure(t_coffee) / (R_VAPOR * t_coffee_k);
+        let rho_v_ambient = RELATIVE_HUMIDITY * saturation_vapor_pressure(t_room) / (R_VAPOR * t_room_k);
+        let q_evap = if rho_v_surface > rho_v_ambient {
+            EVAP_ENHANCEMENT * h_mass * a_top * LATENT_HEAT_VAPORIZATION * (rho_v_surface - rho_v_ambient)
+        } else {
+            0.0
+        };
+
+        let dt_coffee = -(q_conv + q_rad + q_evap) * dt_seconds / coffee_thermal_mass;
+        t_coffee += dt_coffee;
+        time += dt;
+
+        if time >= next_record {
+            results.push(CoolingDataPoint {
+                time_minutes: next_record,
+                coffee_temp_c: t_coffee,
+                mug_temp_c: t_room,
             });
             next_record += record_interval;
         }
@@ -659,6 +728,66 @@ mod tests {
             cross < 30.0,
             "With evaporation, 60°C crossing should be under 30 min, got {:.1}",
             cross
+        );
+    }
+
+    #[test]
+    fn test_single_body_mug_temp_is_room_temp() {
+        let params = MugParameters {
+            material: MugMaterial::Ceramic,
+            volume_ml: 350.0,
+            wall_thickness_mm: 5.0,
+            coffee_temp_c: 95.0,
+            room_temp_c: 22.0,
+            preheated: false,
+            preheat_temp_c: 90.0,
+            h_conv: 10.0,
+            emissivity: MugMaterial::Ceramic.emissivity(),
+            exposure_pct: 1.0,
+        };
+
+        let data = simulate_lumped_numerical(&params, 60);
+
+        for point in &data {
+            assert!(
+                (point.mug_temp_c - params.room_temp_c).abs() < 1e-10,
+                "At t={:.1}, mug_temp ({:.4}) should equal room_temp ({:.1})",
+                point.time_minutes, point.mug_temp_c, params.room_temp_c,
+            );
+        }
+    }
+
+    #[test]
+    fn test_single_body_cools_faster_than_two_body() {
+        let base = MugParameters {
+            material: MugMaterial::Ceramic,
+            volume_ml: 350.0,
+            wall_thickness_mm: 5.0,
+            coffee_temp_c: 95.0,
+            room_temp_c: 22.0,
+            preheated: false,
+            preheat_temp_c: 90.0,
+            h_conv: 10.0,
+            emissivity: MugMaterial::Ceramic.emissivity(),
+            exposure_pct: 0.2,
+        };
+
+        let two_body = simulate_lumped_numerical(&base, 30);
+
+        let single_body_params = MugParameters {
+            exposure_pct: 1.0,
+            ..base
+        };
+        let single_body = simulate_lumped_numerical(&single_body_params, 30);
+
+        // At 30 minutes, single body should be cooler (no mug thermal buffer)
+        let two_body_final = two_body.last().unwrap().coffee_temp_c;
+        let single_body_final = single_body.last().unwrap().coffee_temp_c;
+
+        assert!(
+            single_body_final < two_body_final,
+            "Single body ({:.1}°C) should cool faster than two body ({:.1}°C)",
+            single_body_final, two_body_final,
         );
     }
 

@@ -1,13 +1,13 @@
 use crate::components::{MugControls, ProfileChart, SimulationResults};
 use crate::components::solver_toggle::create_solver_signals;
 use crate::physics::{
-    blend_exposure, compute_comparison, convert_snapshots,
+    apply_exposure_correction, compute_comparison, convert_snapshots,
     seconds_to_minutes, compute_eigenmodes,
     liquid_average_temperature, liquid_near_wall_temperature, shell_average_temperature,
     simulate_sphere_heat_numerical, simulate_three_region_analytical,
     HeatMaterial, HeatSnapshot,
     SphereHeatParams, ThreeRegionParams,
-    MAX_SIMULATION_MINUTES,
+    MAX_SIMULATION_MINUTES, LID_TO_SPHERE_AREA_RATIO,
 };
 use crate::storage::{SharedSettings, StoredSettings};
 use leptos::*;
@@ -69,6 +69,7 @@ fn run_heat_sim(
             t_ambient: room_temp,
             num_modes,
             h_conv: h_conv_eff,
+            h_inner: 0.0,
         };
         let modes = compute_eigenmodes(&params);
         let display_r_max = chart_max_r_cm / 100.0;
@@ -167,7 +168,8 @@ pub fn HeatEquationPanel() -> impl IntoView {
                 liquid_temp_c.get(), shell_temp_c.get(), room_temp_c.get(),
                 shell_material_from_mug(),
                 duration_minutes.get() as f64 * 60.0, num_snapshots.get(), num_modes.get(),
-                convection_coeff.get(), r_max_mult.get(), exposure_pct.get() / 100.0,
+                convection_coeff.get(), r_max_mult.get(),
+                exposure_pct.get() / 100.0 * LID_TO_SPHERE_AREA_RATIO,
             );
             timing.set(js_sys::Date::now() - start);
             result
@@ -186,74 +188,75 @@ pub fn HeatEquationPanel() -> impl IntoView {
                 liquid_temp_c.get(), room_temp_c.get(), room_temp_c.get(),
                 shell_material_from_mug(),
                 duration_minutes.get() as f64 * 60.0, num_snapshots.get(), num_modes.get(),
-                convection_coeff.get(), r_max_mult.get(), exposure_pct.get() / 100.0,
+                convection_coeff.get(), r_max_mult.get(),
+                exposure_pct.get() / 100.0 * LID_TO_SPHERE_AREA_RATIO,
             );
             timing.set(js_sys::Date::now() - start);
             result
         })
     };
 
-    // Blend liquid-region temperatures with the exposed-sphere model.
-    // For analytical mode with exposure > 0%, each liquid grid point's temperature
-    // is blended: T = (1 - exp) * T_3region(r,t) + exp * T_exposed_avg(t)
-    let simulation_data_blended = create_memo(move |_| -> Vec<HeatSnapshot> {
+    // Apply exposure correction for analytical mode.
+    // The analytical solver doesn't model lid-opening heat loss (h_inner=0),
+    // so we apply a multiplicative decay correction:
+    //   T(r,t) = T_amb + [T_3region(r,t) - T_amb] × exp(-t/τ)
+    // This decouples the shell-conduction and exposure effects.
+    let simulation_data_corrected = create_memo(move |_| -> Vec<HeatSnapshot> {
         let data = simulation_data.get();
-        let exposure = exposure_pct.get() / 100.0;
-        if !use_analytical.get() || exposure <= 0.0 {
+        if !use_analytical.get() {
             return data;
         }
-        blend_exposure(
-            data, exposure, liquid_temp_c.get(), room_temp_c.get(),
+        apply_exposure_correction(
+            data, exposure_pct.get() / 100.0, room_temp_c.get(),
             convection_coeff.get(), inner_radius_cm.get() / 100.0,
-            50, duration_minutes.get() as f64 * 60.0,
+            liquid_temp_c.get(),
         )
     });
 
-    let simulation_data_cold_blended = create_memo(move |_| -> Vec<HeatSnapshot> {
+    let simulation_data_cold_corrected = create_memo(move |_| -> Vec<HeatSnapshot> {
         let data = simulation_data_cold.get();
-        let exposure = exposure_pct.get() / 100.0;
-        if !use_analytical.get() || exposure <= 0.0 {
+        if !use_analytical.get() {
             return data;
         }
-        blend_exposure(
-            data, exposure, liquid_temp_c.get(), room_temp_c.get(),
+        apply_exposure_correction(
+            data, exposure_pct.get() / 100.0, room_temp_c.get(),
             convection_coeff.get(), inner_radius_cm.get() / 100.0,
-            50, duration_minutes.get() as f64 * 60.0,
+            liquid_temp_c.get(),
         )
     });
 
     // Read timing from Cells written by simulation memos (memos run before effects in Leptos 0.6)
     create_effect(move |_| {
-        let _ = simulation_data_blended.get();
-        let _ = simulation_data_cold_blended.get();
+        let _ = simulation_data_corrected.get();
+        let _ = simulation_data_cold_corrected.get();
         let total = sim_time.get() + sim_cold_time.get();
         set_compute_time_ms.set(total);
         set_sim_ready.set(true);
     });
 
     let liquid_avg_temps = create_memo(move |_| {
-        liquid_average_temperature(&simulation_data_blended.get())
+        liquid_average_temperature(&simulation_data_corrected.get())
     });
 
     let shell_avg_temps = create_memo(move |_| {
-        shell_average_temperature(&simulation_data_blended.get())
+        shell_average_temperature(&simulation_data_corrected.get())
     });
 
     let liquid_avg_temps_cold = create_memo(move |_| {
-        liquid_average_temperature(&simulation_data_cold_blended.get())
+        liquid_average_temperature(&simulation_data_cold_corrected.get())
     });
 
     let shell_avg_temps_cold = create_memo(move |_| {
-        shell_average_temperature(&simulation_data_cold_blended.get())
+        shell_average_temperature(&simulation_data_cold_corrected.get())
     });
 
     // Near-wall liquid temperatures (outer 10% of liquid radius)
     let wall_fraction = 0.10;
     let liquid_wall_temps = create_memo(move |_| {
-        liquid_near_wall_temperature(&simulation_data_blended.get(), wall_fraction)
+        liquid_near_wall_temperature(&simulation_data_corrected.get(), wall_fraction)
     });
     let liquid_wall_temps_cold = create_memo(move |_| {
-        liquid_near_wall_temperature(&simulation_data_cold_blended.get(), wall_fraction)
+        liquid_near_wall_temperature(&simulation_data_cold_corrected.get(), wall_fraction)
     });
 
     // Active liquid temps — switches between avg and near-wall based on toggle
@@ -277,13 +280,13 @@ pub fn HeatEquationPanel() -> impl IntoView {
     });
 
     let current_snapshot = create_memo(move |_| {
-        let data = simulation_data_blended.get();
+        let data = simulation_data_corrected.get();
         let idx = selected_time_idx.get().min(data.len() - 1);
         data[idx].clone()
     });
 
     let initial_snapshot = create_memo(move |_| {
-        let data = simulation_data_blended.get();
+        let data = simulation_data_corrected.get();
         data[0].clone()
     });
 
@@ -399,7 +402,7 @@ pub fn HeatEquationPanel() -> impl IntoView {
                         convection_coeff=convection_coeff
                         room_temp_c=room_temp_c
                         use_fahrenheit=use_fahrenheit
-                        simulation_data_blended=simulation_data_blended
+                        simulation_data_blended=simulation_data_corrected
                         selected_time_idx=selected_time_idx
                         set_selected_time_idx=set_selected_time_idx
                     />
@@ -410,7 +413,7 @@ pub fn HeatEquationPanel() -> impl IntoView {
                         class:active=move || !use_near_wall.get()
                         on:click=move |_| set_use_near_wall.set(false)
                     >
-                        "Liquid avg"
+                        "Coffee avg"
                     </button>
                     <button
                         class:active=move || use_near_wall.get()

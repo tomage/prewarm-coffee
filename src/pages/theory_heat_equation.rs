@@ -34,8 +34,8 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
                     "We model the system as a sphere with three concentric regions:"
                 </p>
                 <ul>
-                    <li><strong>"Region I: Liquid"</strong>" (water/coffee) \u{2014} high thermal mass, moderate conductivity"</li>
-                    <li><strong>"Region II: Shell"</strong>" (ceramic/glass) \u{2014} moderate conductivity, provides insulation"</li>
+                    <li><strong>"Region I: Coffee"</strong>" (water) \u{2014} high thermal mass, moderate conductivity"</li>
+                    <li><strong>"Region II: Mug"</strong>" (ceramic/glass) \u{2014} moderate conductivity, provides insulation"</li>
                     <li><strong>"Region III: Air"</strong>" \u{2014} very low conductivity, acts as thermal barrier. Heat conduction through the air layer is modeled, and convective loss at the outer surface is captured via a Robin boundary condition (Newton\u{2019}s law of cooling)."</li>
                 </ul>
             </section>
@@ -187,7 +187,7 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
                     "\\(T(r_{\\max}) = T_{\\text{room}}\\)" " at the outer boundary. "
                     "Convection and linearized radiation are applied as Robin conditions "
                     "at the shell outer surface. With " "\\(r_{\\max} \\geq 10 \\times r_{\\text{outer}}\\)" ", "
-                    "the finite domain has negligible effect on liquid/shell temperatures."
+                    "the finite domain has negligible effect on coffee/mug temperatures."
                 </p>
 
                 <div class="note">
@@ -363,8 +363,8 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
                 <ul>
                     <li>
                         <strong>"Heat flow direction:"</strong>
-                        " If T"<sub>"l"</sub>" > T"<sub>"s"</sub>", heat flows from liquid \u{2192} shell \u{2192} air. "
-                        "If T"<sub>"l"</sub>" < T"<sub>"s"</sub>", the shell initially heats the liquid."
+                        " If T"<sub>"l"</sub>" > T"<sub>"s"</sub>", heat flows from coffee \u{2192} mug \u{2192} air. "
+                        "If T"<sub>"l"</sub>" < T"<sub>"s"</sub>", the mug initially heats the coffee."
                     </li>
                     <li>
                         <strong>"Water\u{2019}s thermal mass:"</strong>
@@ -372,7 +372,7 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
                     </li>
                     <li>
                         <strong>"Ceramic as insulator:"</strong>
-                        " The ceramic shell has low thermal conductivity, slowing heat transfer to the air."
+                        " The ceramic mug has low thermal conductivity, slowing heat transfer to the air."
                     </li>
                     <li>
                         <strong>"Air as insulator:"</strong>
@@ -402,7 +402,7 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
 
             <section class="interactive">
                 <h2>"Try It Yourself"</h2>
-                <p>"Adjust the parameters to see how heat flows through the liquid, ceramic shell, and surrounding air."</p>
+                <p>"Adjust the parameters to see how heat flows through the coffee, ceramic mug, and surrounding air."</p>
                 <HeatEquationPanel/>
             </section>
 

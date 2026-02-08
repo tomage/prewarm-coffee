@@ -3,11 +3,11 @@ use crate::components::cooling_chart::{
 };
 use crate::components::MugControls;
 use crate::physics::{
-    blend_exposure, compute_eigenmodes, convert_snapshots,
+    apply_exposure_correction, compute_eigenmodes, convert_snapshots,
     liquid_average_temperature, seconds_to_minutes,
     simulate_lumped_analytical, simulate_lumped_numerical, simulate_sphere_heat_numerical,
     simulate_three_region_analytical, CoolingDataPoint, HeatMaterial,
-    SphereHeatParams, ThreeRegionParams, MAX_SIMULATION_MINUTES,
+    SphereHeatParams, ThreeRegionParams, MAX_SIMULATION_MINUTES, LID_TO_SPHERE_AREA_RATIO,
 };
 use crate::storage::{display_temp as fmt_temp, SharedSettings};
 use leptos::*;
@@ -113,12 +113,12 @@ pub fn ComparePanel() -> impl IntoView {
         let dur_s = duration_minutes.get() as f64 * 60.0;
 
         // Enhance h_conv with linearized radiation from mug outer surface
-        let h_conv_eff = {
-            let sigma: f64 = 5.670_374e-8;
-            let t_avg_k = 0.5 * (liq_temp + room) + 273.15;
-            let h_rad_outer = 4.0 * shell_mat.emissivity * sigma * t_avg_k.powi(3);
-            h + h_rad_outer
-        };
+        let sigma: f64 = 5.670_374e-8;
+        let t_avg_k: f64 = 0.5 * (liq_temp + room) + 273.15;
+        let h_rad_outer = 4.0 * shell_mat.emissivity * sigma * t_avg_k.powi(3);
+        let h_conv_eff = h + h_rad_outer;
+
+        let exposure = exposure_pct.get() / 100.0;
 
         let params = ThreeRegionParams {
             r_inner: inner_r,
@@ -135,6 +135,7 @@ pub fn ComparePanel() -> impl IntoView {
             t_ambient: room,
             num_modes: num_modes.get(),
             h_conv: h_conv_eff,
+            h_inner: 0.0,
         };
         let modes = compute_eigenmodes(&params);
         let display_r_max = 10.0_f64 / 100.0; // 10cm
@@ -147,14 +148,11 @@ pub fn ComparePanel() -> impl IntoView {
             display_r_max,
         );
         let heat_snaps = convert_snapshots(snaps);
-
-        // Apply exposure blending if needed
-        let exposure = exposure_pct.get() / 100.0;
-        let blended = blend_exposure(
-            heat_snaps, exposure, liq_temp, room, h, inner_r, 50, dur_s,
+        let heat_snaps = apply_exposure_correction(
+            heat_snaps, exposure, room, h, inner_r, liq_temp,
         );
 
-        let avg = liquid_average_temperature(&blended);
+        let avg = liquid_average_temperature(&heat_snaps);
         let series = seconds_to_minutes(&avg);
         TimedSeries {
             data: series,
@@ -183,7 +181,7 @@ pub fn ComparePanel() -> impl IntoView {
             shell_material: shell_mat,
             liquid_material: HeatMaterial::water(),
             medium_material: HeatMaterial::air(),
-            evaporation_factor: exposure_pct.get() / 100.0,
+            evaporation_factor: exposure_pct.get() / 100.0 * LID_TO_SPHERE_AREA_RATIO,
             convection_coeff: h,
             r_max_multiplier: r_max_mult.get(),
         };
