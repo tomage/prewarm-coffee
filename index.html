@@ -7,9 +7,10 @@
     <link data-trunk rel="css" href="static/styles.css">
     <script defer src="https://cloud.umami.is/script.js" data-website-id="664c99fa-7059-4b3e-b96d-0ec4d6c11bb2"></script>
     <!-- KaTeX -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
-    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
+    <link data-trunk rel="copy-dir" href="static/katex">
+    <link rel="stylesheet" href="katex/katex.min.css">
+    <script defer src="katex/katex.min.js"></script>
+    <script defer src="katex/auto-render.min.js"></script>
     <script>
     document.addEventListener("DOMContentLoaded", function() {
         var timer = null;

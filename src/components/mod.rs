@@ -1,3 +1,4 @@
+mod accordion_group;
 mod app;
 mod compare_panel;
 mod comparison_metrics;
@@ -9,9 +10,11 @@ mod nav_bar;
 mod lumped_panel;
 pub(crate) mod profile_chart;
 mod simulation_results;
+mod simulator_overlay;
 mod solver_toggle;
 
 
+pub use accordion_group::AccordionGroup;
 pub use app::App;
 pub use compare_panel::ComparePanel;
 pub use comparison_metrics::ComparisonMetrics;
@@ -23,5 +26,6 @@ pub use nav_bar::NavBar;
 pub use lumped_panel::LumpedPanel;
 pub use profile_chart::ProfileChart;
 pub use simulation_results::SimulationResults;
+pub use simulator_overlay::SimulatorOverlay;
 pub use solver_toggle::SolverToggle;
 

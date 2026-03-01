@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Version 4] - 2026-03-01
+
+### Added
+
+- **Mobile simulator overlay**: Fullscreen interactive mode on mobile (≤700px) with chart pinned at top and scrollable accordion-grouped controls below
+- New `AccordionGroup` component for collapsible control sections with `aria-expanded` accessibility support
+- New `SimulatorOverlay` component with tab switching, body scroll lock, and independent chart/controls scrolling
+- "Open Simulator" entry card on mobile replaces the inline simulator layout
+- **Offline KaTeX**: Bundled KaTeX JS, CSS, and 9 woff2 fonts locally, removing CDN dependency for full offline support
+
+### Changed
+
+- Mobile layout: controls reorganized into 4 accordion groups (Mug Properties, Temperatures, Simulation, Advanced) instead of flat list
+- Desktop layout unchanged — all mobile changes gated behind ≤700px media query
+- Overlay chart area scrolls independently for panels with multiple charts (Heat Equation profile, Compare table)
+
+### Dependencies
+
+- Added `web-sys` features: `DomTokenList`, `HtmlElement` (for body scroll lock)
+
 ## [Version 3] - 2026-02-28
 
 ### Added

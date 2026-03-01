@@ -1,16 +1,17 @@
-use crate::components::{ComparePanel, HeatEquationPanel, LumpedPanel};
+use crate::components::{ComparePanel, HeatEquationPanel, LumpedPanel, SimulatorOverlay};
 use crate::storage::SharedSettings;
 use leptos::*;
 use leptos_router::{A, use_query_map};
+use std::rc::Rc;
 
 #[component]
 pub fn App() -> impl IntoView {
     let settings = SharedSettings::instance();
     let active_tab = settings.active_tab;
 
-    // Reactively track ?tab= query parameter — works for both direct loads
-    // and SPA navigation (the route view may be kept alive, so we can't rely
-    // on the component body re-running).
+    let (show_overlay, set_show_overlay) = create_signal(false);
+
+    // Reactively track ?tab= query parameter
     let query = use_query_map();
     create_effect(move |_| {
         let params = query.get();
@@ -20,6 +21,15 @@ pub fn App() -> impl IntoView {
             }
         }
     });
+
+    let render_active_panel = move || {
+        let tab = active_tab.get();
+        match tab.as_str() {
+            "heat_equation" => view! { <HeatEquationPanel/> }.into_view(),
+            "compare" => view! { <ComparePanel/> }.into_view(),
+            _ => view! { <LumpedPanel/> }.into_view(),
+        }
+    };
 
     view! {
         <main class="container">
@@ -37,7 +47,7 @@ pub fn App() -> impl IntoView {
                 </p>
                 <p>
                     "By preheating your mug with hot water first, the mug starts at a higher temperature "
-                    "and steals less heat from your coffee. The result? Your coffee stays warmer, longer—"
+                    "and steals less heat from your coffee. The result? Your coffee stays warmer, longer\u{2014}"
                     "and you get more time in the ideal drinking range."
                 </p>
             </section>
@@ -49,28 +59,34 @@ pub fn App() -> impl IntoView {
                     "uniform properties) and may not accurately reflect real-world mug cooling. "
                     "See "<A href="/theory">"Theory & Models"</A>" for assumptions and limitations."
                 </p>
-                <div class="solver-toggle solver-toggle--3">
+
+                // Mobile entry card — visible only on mobile via CSS
+                <div class="mobile-sim-entry">
+                    <p>"Adjust parameters and watch how preheating affects cooling in real time."</p>
                     <button
-                        class:active=move || active_tab.get() == "lumped"
-                        on:click=move |_| active_tab.set("lumped".to_string())
-                    >"Lumped Capacitance"</button>
-                    <button
-                        class:active=move || active_tab.get() == "heat_equation"
-                        on:click=move |_| active_tab.set("heat_equation".to_string())
-                    >"Heat Equation"</button>
-                    <button
-                        class:active=move || active_tab.get() == "compare"
-                        on:click=move |_| active_tab.set("compare".to_string())
-                    >"Compare"</button>
+                        class="open-sim-btn"
+                        on:click=move |_| set_show_overlay.set(true)
+                    >"Open Simulator"</button>
                 </div>
-                {move || {
-                    let tab = active_tab.get();
-                    match tab.as_str() {
-                        "heat_equation" => view! { <HeatEquationPanel/> }.into_view(),
-                        "compare" => view! { <ComparePanel/> }.into_view(),
-                        _ => view! { <LumpedPanel/> }.into_view(),
-                    }
-                }}
+
+                // Desktop inline simulator — hidden on mobile via CSS
+                <div class="desktop-sim">
+                    <div class="solver-toggle solver-toggle--3">
+                        <button
+                            class:active=move || active_tab.get() == "lumped"
+                            on:click=move |_| active_tab.set("lumped".to_string())
+                        >"Lumped Capacitance"</button>
+                        <button
+                            class:active=move || active_tab.get() == "heat_equation"
+                            on:click=move |_| active_tab.set("heat_equation".to_string())
+                        >"Heat Equation"</button>
+                        <button
+                            class:active=move || active_tab.get() == "compare"
+                            on:click=move |_| active_tab.set("compare".to_string())
+                        >"Compare"</button>
+                    </div>
+                    {render_active_panel}
+                </div>
             </section>
 
             <section class="learn-more">
@@ -96,14 +112,30 @@ pub fn App() -> impl IntoView {
                 <p class="analytics-note">
                     "Analytics by "
                     <a href="https://umami.is" target="_blank" rel="noopener">"Umami"</a>
-                    " · No cookies · No personal data"
+                    " \u{00B7} No cookies \u{00B7} No personal data"
                 </p>
                 <p>
                     <a href="https://github.com/tomage/prewarm-coffee" target="_blank" rel="noopener">"Source code"</a>
-                    " · AGPL-3.0 · "
-                    "© 2025"
+                    " \u{00B7} AGPL-3.0 \u{00B7} "
+                    "\u{00A9} 2025"
                 </p>
             </footer>
         </main>
+
+        // Mobile simulator overlay
+        <SimulatorOverlay
+            show=show_overlay
+            set_show=set_show_overlay
+            active_tab=active_tab
+            chart=Rc::new(move || {
+                let tab = active_tab.get();
+                let v = match tab.as_str() {
+                    "heat_equation" => view! { <HeatEquationPanel/> }.into_view(),
+                    "compare" => view! { <ComparePanel/> }.into_view(),
+                    _ => view! { <LumpedPanel/> }.into_view(),
+                };
+                Fragment::new(vec![v])
+            })
+        />
     }
 }

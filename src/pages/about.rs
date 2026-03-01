@@ -54,7 +54,14 @@ pub fn AboutPage() -> impl IntoView {
             <section class="about-section">
                 <h2>"Version History"</h2>
                 <dl class="version-history">
-                    <dt>"v3 \u{2014} Current " <span class="version-date">"February 28, 2026"</span></dt>
+                    <dt>"v4 \u{2014} Current " <span class="version-date">"March 1, 2026"</span></dt>
+                    <dd>
+                        <ul>
+                            <li>"Fullscreen mobile simulator: chart pinned at top with scrollable accordion controls"</li>
+                            <li>"Offline support: KaTeX math rendering bundled locally (no CDN dependency)"</li>
+                        </ul>
+                    </dd>
+                    <dt>"v3 " <span class="version-date">"February 28, 2026"</span></dt>
                     <dd>
                         <ul>
                             <li>"Expanded and refactored lumped analytical and numerical solvers"</li>
