@@ -15,13 +15,6 @@ pub fn TheoryLumpedPage() -> impl IntoView {
                 <A href="/theory">"< Back to Theory"</A>
             </nav>
 
-            <p class="wip-note">
-                "This page is a work in progress. There may be discrepancies between "
-                "the explanations below and what the simulation actually computes, as well "
-                "as outright errors. If you spot something, please "
-                <a href="https://github.com/tomage/prewarm-coffee/issues" target="_blank" rel="noopener">"open an issue"</a>"."
-            </p>
-
             <section class="physics-detail">
                 <h2>"Newton's Law of Cooling"</h2>
                 <p>
@@ -49,13 +42,21 @@ pub fn TheoryLumpedPage() -> impl IntoView {
                 <div class="heat-flow">
                     <h3>"1. Coffee to Mug (Conduction)"</h3>
                     <div class="formula">
-                        "\\[Q = k_{\\text{eff}} \\cdot (T_{\\text{coffee}} - T_{\\text{mug}})\\]"
+                        "\\[Q = G \\cdot (T_{\\text{coffee}} - T_{\\text{mug}}), \\qquad G = \\frac{1}{\\dfrac{1}{h_w A} + \\dfrac{L/2}{k A}}\\]"
                     </div>
                     <p>
                         "Heat transfers from the hot coffee to the mug walls through direct contact. "
-                        "The effective coefficient " "\\(k_{\\text{eff}} = 2\\,k_{\\text{material}}\\)" " is a simplified "
-                        "model for coffee-to-mug heat transfer, where " "\\(k_{\\text{material}}\\)" " is the mug "
-                        "material's thermal conductivity in W/(m\u{00B7}K)."
+                        "The conductance " "\\(G\\)" " (in W/K) is two resistances in series: a thin layer of "
+                        "water next to the wall, with coffee-side coefficient "
+                        "\\(h_w = 500\\)" " W/(m"<sup>"2"</sup>"\u{00B7}K), and conduction through half the wall "
+                        "thickness " "\\(L\\)" " with the material\u{2019}s conductivity " "\\(k\\)" ". "
+                        "Half, because the lumped mug temperature is the wall\u{2019}s average, which sits at its "
+                        "mid-plane. " "\\(A = 5\\pi r^2\\)" " is the wetted inner area (side "
+                        "\\(2\\pi r \\cdot 2r\\)" " plus base " "\\(\\pi r^2\\)" ")."
+                    </p>
+                    <p>
+                        "For a ceramic mug the two resistances are similar; a steel wall conducts so well that "
+                        "the water layer dominates, and a plastic wall is dominated by its own conduction."
                     </p>
                 </div>
 
@@ -68,8 +69,11 @@ pub fn TheoryLumpedPage() -> impl IntoView {
                         "Heat escapes from the exposed coffee surface (top of the mug) through "
                         "natural convection. " "\\(h\\)" " is the convective heat transfer coefficient "
                         "(~20 W/m"<sup>"2"</sup>"K for natural convection with buoyancy), "
-                        "\\(A_{\\text{top}}\\)" " is the top surface area, and "
-                        "\\(f_{\\text{open}}\\)" " is the lid opening fraction (0 = fully covered, 1 = fully open)."
+                        "\\(A_{\\text{top}} = \\pi r^2\\)" " is the mug\u{2019}s open top, and "
+                        "\\(f_{\\text{open}}\\)" " is the exposure setting: how open the lid is, from 0 "
+                        "(sealed lid) to 1 (an open mug with no lid). The mug is always there; exposure "
+                        "only sets how much of the coffee\u{2019}s top surface reaches the room. The same "
+                        "open area carries convection, evaporation and radiation from the coffee."
                     </p>
                 </div>
 
@@ -99,9 +103,20 @@ pub fn TheoryLumpedPage() -> impl IntoView {
                         "carries vapor away faster than a flat-plate model predicts."
                     </p>
                     <p>
-                        "Evaporation is the " <strong>"dominant heat loss mechanism"</strong>
-                        " for an open cup, responsible for roughly 40\u{2013}50% of total cooling. "
+                        "Evaporation is the " <strong>"dominant heat loss"</strong>
+                        " from the open coffee surface: at the default " "\\(h_{\\text{conv}} = 20\\)" " W/(m"<sup>"2"</sup>"\u{00B7}K) "
+                        "it is roughly ten times convection and radiation from the same surface combined "
+                        "(about 9\u{00D7} at 50 \u{00B0}C, 14\u{00D7} at 70 \u{00B0}C). "
                         "This is why blowing on coffee works\u{2014}it accelerates evaporation."
+                    </p>
+                    <p>
+                        "The room air holds less vapor than saturated air at room temperature, so "
+                        "evaporation does not stop when the coffee reaches room temperature. "
+                        "Left long enough, the coffee can settle a few degrees below room. Because the "
+                        "plume factor \\(\\eta\\) speeds up evaporation but not convection, the open "
+                        "surface alone would stop losing heat near 14 \u{00B0}C in a 22 \u{00B0}C room at "
+                        "50% humidity, a little below the wet-bulb temperature (15.4 \u{00B0}C); this "
+                        "follows from the assumed \\(\\eta\\), not from measurement."
                     </p>
                 </div>
 
@@ -119,8 +134,9 @@ pub fn TheoryLumpedPage() -> impl IntoView {
                         "ceramic and glass are similar (\\(\\approx 0.90\\)), while stainless steel is "
                         "much lower (\\(\\approx 0.10\\)). Radiation from the coffee surface is scaled by "
                         "the lid opening fraction, while the mug radiates from its full outer surface "
-                        "regardless. Radiation contributes roughly 15\u{2013}20% of total heat loss at "
-                        "typical coffee temperatures."
+                        "regardless. Per square metre, radiation is about a third of convection at the "
+                        "default " "\\(h_{\\text{conv}} = 20\\)" " W/(m"<sup>"2"</sup>"\u{00B7}K), and comparable "
+                        "to it only for still air near " "\\(h_{\\text{conv}} \\approx 10\\)" "."
                     </p>
                 </div>
             </section>
@@ -174,7 +190,7 @@ pub fn TheoryLumpedPage() -> impl IntoView {
                 <div class="note">
                     <strong>"Foreshadowing: "</strong>
                     "When we move to the heat equation (PDE model), the spatial temperature distribution "
-                    "means we can't reduce the problem to two ODEs. The numerical approach (finite differences) "
+                    "means we can't reduce the problem to two ODEs. The numerical approach (finite volumes) "
                     "becomes essential, and the analytical solution becomes far more involved."
                 </div>
             </section>
@@ -185,17 +201,20 @@ pub fn TheoryLumpedPage() -> impl IntoView {
                     "The numerical model is nonlinear (evaporation and radiation), but we can "
                     <em>"linearize"</em> " these terms to obtain a closed-form solution. "
                     "Radiation is linearized as \\(Q_{\\text{rad}} \\approx h_{\\text{rad}} \\cdot A \\cdot (T - T_{\\text{room}})\\) "
-                    "where \\(h_{\\text{rad}} = 4\\varepsilon\\sigma T_m^3\\). Evaporation is similarly "
-                    "linearized by computing an effective heat transfer coefficient at the current "
-                    "temperature. These linearized terms are folded into the convective coefficients, "
-                    "yielding a 2\u{00D7}2 linear system with an exact solution."
+                    "where \\(h_{\\text{rad}} = 4\\varepsilon\\sigma T_m^3\\) and \\(T_m\\) is the mean of the "
+                    "surface and room temperatures. Evaporation is linearized by its tangent at the current "
+                    "coffee temperature, \\(Q_{\\text{evap}} \\approx Q_0 + Q_0'\\,(T - T_0)\\). "
+                    "Together, the coffee\u{2019}s open-top loss becomes "
+                    "\\(H_{\\text{top}}\\,(T_{\\text{coffee}} - T_{\\text{ref}})\\), where "
+                    "\\(T_{\\text{ref}}\\) sits a little below room because evaporation continues at room "
+                    "temperature. The result is a 2\u{00D7}2 linear system with an exact solution."
                 </p>
                 <p>
                     "To keep the linearization accurate as the temperature drops, the solver uses "
                     <strong>"piecewise linearization"</strong>
                     ": every 12 seconds, it re-computes the linearized coefficients at the current "
                     "temperature, re-solves the eigenvalue problem, and continues from there. "
-                    "This keeps the analytical and numerical solvers within ~0.1\u{00B0}C of each other "
+                    "This keeps the analytical and numerical solvers within about 0.15\u{00B0}C of each other "
                     "across the full simulation."
                 </p>
 
@@ -207,14 +226,17 @@ pub fn TheoryLumpedPage() -> impl IntoView {
                     "Then introduce four rate constants:"
                 </p>
                 <ul>
-                    <li>"\\(a = k_{\\text{eff}} \\,/\\, C_{\\text{coffee}}\\)" " — coffee\u{2194}mug coupling"</li>
-                    <li>"\\(b = h_{\\text{eff,coffee}} \\,/\\, C_{\\text{coffee}}\\)" " — coffee\u{2192}environment (convection + linearized radiation + linearized evaporation)"</li>
-                    <li>"\\(c = k_{\\text{eff}} \\,/\\, C_{\\text{mug}}\\)" " — mug\u{2190}coffee coupling"</li>
+                    <li>"\\(a = G \\,/\\, C_{\\text{coffee}}\\)" " — coffee\u{2194}mug coupling"</li>
+                    <li>"\\(b = H_{\\text{top}} \\,/\\, C_{\\text{coffee}}\\)" " — coffee\u{2192}environment (convection + linearized radiation + linearized evaporation)"</li>
+                    <li>"\\(c = G \\,/\\, C_{\\text{mug}}\\)" " — mug\u{2190}coffee coupling"</li>
                     <li>"\\(d = h_{\\text{eff,mug}} \\,/\\, C_{\\text{mug}}\\)" " — mug\u{2192}environment (convection + linearized radiation)"</li>
                 </ul>
-                <p>"The coupled system becomes:"</p>
+                <p>
+                    "With " "\\(u_{\\text{ref}} = T_{\\text{ref}} - T_{\\text{room}} \\le 0\\)" ", "
+                    "the coupled system becomes:"
+                </p>
                 <div class="formula">
-                    "\\[\\frac{du}{dt} = -(a+b)\\,u + a\\,v\\]"
+                    "\\[\\frac{du}{dt} = -(a+b)\\,u + a\\,v + b\\,u_{\\text{ref}}\\]"
                 </div>
                 <div class="formula">
                     "\\[\\frac{dv}{dt} = c\\,u - (c+d)\\,v\\]"
@@ -223,7 +245,7 @@ pub fn TheoryLumpedPage() -> impl IntoView {
                 <h3>"Matrix Form and Eigenvalues"</h3>
                 <p>"Writing this as a matrix equation:"</p>
                 <div class="formula">
-                    "\\[\\frac{d}{dt}\\begin{pmatrix} u \\\\ v \\end{pmatrix} = \\underbrace{\\begin{pmatrix} -(a+b) & a \\\\ c & -(c+d) \\end{pmatrix}}_{\\mathbf{M}} \\begin{pmatrix} u \\\\ v \\end{pmatrix}\\]"
+                    "\\[\\frac{d}{dt}\\begin{pmatrix} u \\\\ v \\end{pmatrix} = \\underbrace{\\begin{pmatrix} -(a+b) & a \\\\ c & -(c+d) \\end{pmatrix}}_{\\mathbf{M}} \\begin{pmatrix} u \\\\ v \\end{pmatrix} + \\mathbf{s}\\]"
                 </div>
                 <p>"The eigenvalues of " "\\(\\mathbf{M}\\)" " are:"</p>
                 <div class="formula">
@@ -236,16 +258,18 @@ pub fn TheoryLumpedPage() -> impl IntoView {
 
                 <h3>"General Solution (per segment)"</h3>
                 <p>
-                    "With eigenvectors " "\\(\\mathbf{v}_1, \\mathbf{v}_2\\)" " the solution within each "
-                    "segment is:"
+                    "The constant term " "\\(b\\,u_{\\text{ref}}\\)" " shifts the steady state the segment "
+                    "decays toward to " "\\(\\mathbf{x}_{\\text{ss}} = -\\mathbf{M}^{-1} \\mathbf{s}\\)" ", with "
+                    "\\(\\mathbf{s} = (b\\,u_{\\text{ref}},\\ 0)\\)" ". With eigenvectors "
+                    "\\(\\mathbf{v}_1, \\mathbf{v}_2\\)" " the solution within each segment is:"
                 </p>
                 <div class="formula">
-                    "\\[\\begin{pmatrix} u(t) \\\\ v(t) \\end{pmatrix} = c_1 \\,\\mathbf{v}_1\\, e^{\\lambda_1 t} + c_2 \\,\\mathbf{v}_2\\, e^{\\lambda_2 t}\\]"
+                    "\\[\\begin{pmatrix} u(t) \\\\ v(t) \\end{pmatrix} = \\mathbf{x}_{\\text{ss}} + c_1 \\,\\mathbf{v}_1\\, e^{\\lambda_1 t} + c_2 \\,\\mathbf{v}_2\\, e^{\\lambda_2 t}\\]"
                 </div>
                 <p>
                     "The constants " "\\(c_1, c_2\\)" " are determined by the temperatures at the "
                     "start of each segment. At each segment boundary, the linearized coefficients "
-                    "\\(b\\)" " and " "\\(d\\)" " are recomputed at the current temperature, giving "
+                    "\\(b\\)" ", " "\\(d\\)" " and " "\\(u_{\\text{ref}}\\)" " are recomputed at the current temperature, giving "
                     "new eigenvalues and eigenvectors for the next segment."
                 </p>
 
@@ -341,15 +365,47 @@ pub fn TheoryLumpedPage() -> impl IntoView {
                     "\\[r = \\left(\\frac{V}{2\\pi}\\right)^{1/3}\\]"
                 </div>
 
-                <p>"The mug's material volume is the outer cylinder minus the inner cylinder:"</p>
+                <p>
+                    "The mug's material volume is the outer cylinder minus the inner cylinder. With wall "
+                    "thickness " "\\(L\\)" ", the outer cylinder is " "\\(L\\)" " wider on each side and "
+                    "\\(L\\)" " taller, which adds the base:"
+                </p>
                 <div class="formula">
-                    "\\[V_{\\text{material}} = V_{\\text{outer}} - V_{\\text{inner}} + V_{\\text{bottom}}\\]"
+                    "\\[V_{\\text{material}} = \\pi (r+L)^2 (h+L) - \\pi r^2 h\\]"
                 </div>
 
                 <p>"Then thermal mass is:"</p>
                 <div class="formula">
                     "\\[C_{\\text{thermal}} = V_{\\text{material}} \\cdot \\rho \\cdot c\\]"
                 </div>
+            </section>
+
+            <section class="physics-detail">
+                <h2>"Assumptions"</h2>
+                <ul>
+                    <li>"The mug is a cylinder with height = 2 \u{00D7} radius and a base of the same "
+                        "thickness as the wall."</li>
+                    <li>"Still air with a constant convection coefficient " "\\(h_{\\text{conv}}\\)" ", and a "
+                        "constant room temperature."</li>
+                    <li>"The coffee and the mug are each well mixed: one temperature each (lumped capacitance)."</li>
+                    <li>"The coffee-side coefficient is " "\\(h_w = 500\\)" " W/(m"<sup>"2"</sup>"\u{00B7}K): "
+                        "natural convection of hot water on a vertical wall, from the vertical-plate correlation "
+                        "(Churchill\u{2013}Chu; Incropera & DeWitt, ch. 9). It is the same order as the heat-equation "
+                        "model\u{2019}s effective water conductivity."</li>
+                    <li>"The analytical solver linearizes radiation (and evaporation), re-linearizing every 12 s; "
+                        "the numerical solver uses the full " "\\(T^4\\)" " law."</li>
+                    <li>"Evaporation follows the Lewis analogy \u{00D7} 2.5 for the rising plume, at 50% relative "
+                        "humidity. It continues at room temperature, so coffee can end a few degrees below room. "
+                        "The 2.5 factor scales evaporation only, not convection, which puts that limit slightly "
+                        "below the wet-bulb temperature."</li>
+                    <li>"A lid is a perfect insulator with no heat capacity: no heat leaves through the covered "
+                        "part of the top."</li>
+                    <li>"At 100% exposure (no lid), the open area is the mug\u{2019}s top, " "\\(\\pi r^2\\)" "; "
+                        "exposure scales it linearly down to 0 for a sealed lid."</li>
+                    <li>"The base loses heat to the air like the sides (by convection and radiation); there is "
+                        "no table or saucer contact."</li>
+                    <li>"Constant material properties, independent of temperature."</li>
+                </ul>
             </section>
 
             <section class="physics-detail">
@@ -367,21 +423,6 @@ pub fn TheoryLumpedPage() -> impl IntoView {
                     "A preheated mug also has stored thermal energy that helps buffer against heat loss, "
                     "keeping the coffee-mug system warmer for longer."
                 </p>
-            </section>
-
-            <section class="physics-detail">
-                <h2>"Model Limitations"</h2>
-                <p>"Despite including five heat transfer mechanisms, the model still makes simplifying assumptions:"</p>
-                <ul>
-                    <li>"Uniform temperature within coffee and mug (lumped capacitance)"</li>
-                    <li>"Lid modeled as a simple opening fraction " "\\(f_{\\text{open}}\\)" " that scales "
-                        "top-surface losses (convection, evaporation, and radiation from the coffee surface)"</li>
-                    <li>"Constant room temperature and 50% relative humidity"</li>
-                    <li>"Simplified cylindrical geometry (height = 2 \u{00D7} radius)"</li>
-                    <li>"Evaporation uses an empirical enhancement factor (\u{00D7}2.5) over the Lewis analogy"</li>
-                    <li>"The analytical solver uses piecewise linearization (re-solved every 12s), "
-                        "which stays within ~0.1\u{00B0}C of the numerical solver"</li>
-                </ul>
             </section>
 
             <section class="interactive">

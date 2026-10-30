@@ -1,4 +1,4 @@
-//! Simulation of the heat equation for a sphere in an infinite medium
+//! Simulation of the heat equation for a sphere in a finite air domain
 //!
 //! Models temperature distribution T(r, t) for a shell (ceramic, steel, etc.)
 //! containing liquid, surrounded by air, solving the spherical heat equation:
@@ -9,24 +9,20 @@
 //!
 //! Features:
 //! - Three-region model: liquid core, shell, surrounding air
-//! - Interface conditions using harmonic mean of diffusivities
-//! - Optional evaporative cooling at the liquid surface
-//! - Convective heat transfer at the outer boundary
+//! - Finite-volume interfaces: each grid segment carries one material's
+//!   conductivity, and interface nodes own capacity from both sides
+//! - Open-top losses (convection, radiation, evaporation) at the liquid
+//!   surface, scaled by lid openness
+//! - Convection and radiation at the shell's outer surface; the air at r_max
+//!   is held at room temperature (`OuterBoundary::Ambient`), or the domain
+//!   ends insulated for closed-system tests (`OuterBoundary::Insulated`)
 
-/// Stefan-Boltzmann constant W/(m²·K⁴)
-const STEFAN_BOLTZMANN: f64 = 5.670_374e-8;
-
-// Evaporation constants (same as lumped model)
-const LATENT_HEAT_VAPORIZATION: f64 = 2.26e6; // J/kg
-const R_VAPOR: f64 = 461.5; // J/(kg·K)
-const RHO_AIR: f64 = 1.18; // kg/m³
-const CP_AIR: f64 = 1005.0; // J/(kg·K)
-const RELATIVE_HUMIDITY: f64 = 0.50;
-const EVAP_ENHANCEMENT: f64 = 2.5;
-
-fn saturation_vapor_pressure(t_celsius: f64) -> f64 {
-    610.78 * (17.27 * t_celsius / (t_celsius + 237.3)).exp()
-}
+use super::constants::{
+    CELSIUS_TO_KELVIN, CP_AIR, K_AIR, RHO_AIR, STEFAN_BOLTZMANN, WATER_DENSITY,
+    WATER_EFFECTIVE_CONDUCTIVITY, WATER_EMISSIVITY, WATER_SPECIFIC_HEAT,
+};
+use super::materials::MugMaterial;
+use super::surface::{open_top_loss, sphere_open_fraction};
 
 /// Material properties for the heat equation
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -41,63 +37,53 @@ pub struct HeatMaterial {
     pub emissivity: f64,
 }
 
-/// Physical thermal conductivity of air at ~25°C in W/(m·K).
-///
-/// Used for boundary-layer profile rendering in the profile chart and for
-/// convection calculations at the mug outer surface.
-pub const K_AIR: f64 = 0.026;
-
-/// Convection coefficient multiplier for exposed (no shell) simulations.
-pub const EXPOSED_CONVECTION_MULTIPLIER: f64 = 1.5;
-
 impl HeatMaterial {
     /// Thermal diffusivity α = k/(ρc) in m²/s
     pub fn diffusivity(&self) -> f64 {
         self.conductivity / (self.density * self.specific_heat)
     }
 
-    /// Steel properties
-    pub fn steel() -> Self {
+    /// Shell properties for a mug material, with the surface emissivity
+    /// supplied separately (the user can override it).
+    pub fn from_mug(material: MugMaterial, emissivity: f64) -> Self {
         Self {
-            conductivity: 50.0,      // W/(m·K)
-            density: 7800.0,         // kg/m³
-            specific_heat: 500.0,    // J/(kg·K)
-            emissivity: 0.10,
+            conductivity: material.thermal_conductivity(),
+            density: material.density(),
+            specific_heat: material.specific_heat(),
+            emissivity,
         }
     }
 
-    /// Ceramic properties
+    /// Stainless steel shell
+    pub fn steel() -> Self {
+        let material = MugMaterial::StainlessSteel;
+        Self::from_mug(material, material.emissivity())
+    }
+
+    /// Ceramic shell
     pub fn ceramic() -> Self {
-        Self {
-            conductivity: 1.0,       // W/(m·K)
-            density: 2400.0,         // kg/m³
-            specific_heat: 880.0,    // J/(kg·K)
-            emissivity: 0.90,
-        }
+        let material = MugMaterial::Ceramic;
+        Self::from_mug(material, material.emissivity())
     }
 
     /// Air properties (at ~25°C)
     pub fn air() -> Self {
         Self {
-            conductivity: 0.026,     // W/(m·K)
-            density: 1.18,           // kg/m³
-            specific_heat: 1005.0,   // J/(kg·K)
-            emissivity: 1.0,         // not physically meaningful for air medium
+            conductivity: K_AIR,
+            density: RHO_AIR,
+            specific_heat: CP_AIR,
+            emissivity: 1.0, // not physically meaningful for air medium
         }
     }
 
-    /// Water properties (effective conductivity includes natural convection)
-    ///
-    /// Molecular conductivity of water is 0.6 W/(m·K), but hot coffee has
-    /// vigorous buoyancy-driven convection (Ra ~ 10⁹) that keeps the bulk
-    /// nearly well-mixed. Using an effective conductivity of ~10× molecular
-    /// approximates this mixing without a full Navier-Stokes solve.
+    /// Water properties (effective conductivity includes natural convection;
+    /// see `WATER_EFFECTIVE_CONDUCTIVITY`)
     pub fn water() -> Self {
         Self {
-            conductivity: 6.0,       // W/(m·K) effective (≈10× molecular)
-            density: 1000.0,         // kg/m³
-            specific_heat: 4186.0,   // J/(kg·K)
-            emissivity: 0.96,
+            conductivity: WATER_EFFECTIVE_CONDUCTIVITY,
+            density: WATER_DENSITY,
+            specific_heat: WATER_SPECIFIC_HEAT,
+            emissivity: WATER_EMISSIVITY,
         }
     }
 
@@ -105,6 +91,17 @@ impl HeatMaterial {
     pub fn coffee() -> Self {
         Self::water()
     }
+}
+
+/// Boundary condition at the last grid point, r_max.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum OuterBoundary {
+    /// Fixed at room temperature (Dirichlet): the far field of the air region.
+    #[default]
+    Ambient,
+    /// Zero heat flux. With `r_max_multiplier = 1.0` the domain ends at the
+    /// shell's outer surface, so coffee and shell form a closed system.
+    Insulated,
 }
 
 /// Parameters for the sphere heat equation simulation
@@ -126,31 +123,36 @@ pub struct SphereHeatParams {
     pub liquid_material: HeatMaterial,
     /// Surrounding medium material
     pub medium_material: HeatMaterial,
-    /// Evaporation factor (0.0 = none, 1.0 = typical for water at ~80°C)
-    /// Adds extra heat loss at liquid surface due to evaporative cooling
-    pub evaporation_factor: f64,
-    /// Convective heat transfer coefficient at outer boundary W/(m²·K)
-    /// Typical values: 5-25 for natural convection in air, 10-200 for forced convection
-    /// Set to 0.0 to use pure conduction (Dirichlet boundary at r_max)
+    /// Lid openness (0.0–1.0): 0 = sealed lid, 1 = open mug with no lid.
+    /// The open share of the liquid surface, `surface::sphere_open_fraction`,
+    /// loses heat by convection, radiation and evaporation.
+    pub exposure: f64,
+    /// Convective heat transfer coefficient of the room air in W/(m²·K), at
+    /// the shell's outer surface and the open liquid surface.
+    /// Typical values: 5-25 for natural convection in air, 10-200 for forced convection.
+    /// 0.0 leaves radiation as the only loss to the room.
     pub convection_coeff: f64,
     /// r_max = outer_radius_m * r_max_multiplier. Default 3.0.
     pub r_max_multiplier: f64,
+    /// Boundary condition at r_max.
+    pub outer_boundary: OuterBoundary,
 }
 
 impl Default for SphereHeatParams {
     fn default() -> Self {
         Self {
-            outer_radius_m: 0.05,  // 5 cm outer radius
-            inner_radius_m: 0.04,  // 4 cm inner radius (1 cm thick shell)
-            shell_temp_c: 100.0,   // 100°C shell
-            liquid_temp_c: 200.0,  // 200°C liquid (hotter than shell)
-            room_temp_c: 20.0,     // 20°C room
+            outer_radius_m: 0.05, // 5 cm outer radius
+            inner_radius_m: 0.04, // 4 cm inner radius (1 cm thick shell)
+            shell_temp_c: 100.0,  // 100°C shell
+            liquid_temp_c: 200.0, // 200°C liquid (hotter than shell)
+            room_temp_c: 20.0,    // 20°C room
             shell_material: HeatMaterial::steel(),
             liquid_material: HeatMaterial::water(),
             medium_material: HeatMaterial::air(),
-            evaporation_factor: 0.0, // No evaporation by default
-            convection_coeff: 10.0,  // Natural convection in air ~10 W/(m²·K)
+            exposure: 0.0,          // Sealed lid by default
+            convection_coeff: 10.0, // Natural convection in air ~10 W/(m²·K)
             r_max_multiplier: 3.0,
+            outer_boundary: OuterBoundary::Ambient,
         }
     }
 }
@@ -168,6 +170,32 @@ pub struct HeatSnapshot {
     pub inner_interface_idx: usize,
     /// Index where shell/air interface is
     pub outer_interface_idx: usize,
+}
+
+/// Number of backward-Euler steps before switching to Crank–Nicolson.
+///
+/// Crank–Nicolson's amplification factor tends to −1 for stiff modes, so the
+/// initial temperature jump at a high-diffusivity shell would flip sign every
+/// step instead of decaying. Backward Euler damps those modes strongly; a few
+/// such steps at the start (Rannacher start-up) remove them, and the run then
+/// keeps Crank–Nicolson's second-order accuracy.
+const RANNACHER_STEPS: usize = 4;
+
+/// Radial bounds of node `i`'s control volume: the half-points
+/// [r_{i−½}, r_{i+½}], with r_{−½} = 0 and the last node's volume ending at
+/// its own radius.
+fn control_volume_bounds(radii: &[f64], i: usize) -> (f64, f64) {
+    let lo = if i == 0 {
+        0.0
+    } else {
+        0.5 * (radii[i - 1] + radii[i])
+    };
+    let hi = if i + 1 < radii.len() {
+        0.5 * (radii[i] + radii[i + 1])
+    } else {
+        radii[i]
+    };
+    (lo, hi)
 }
 
 /// Solve tridiagonal system Ax = rhs in-place using the Thomas algorithm.
@@ -192,8 +220,9 @@ fn thomas_solve(sub: &[f64], dia: &mut [f64], sup: &[f64], rhs: &mut [f64]) {
 
 /// Simulate the heat equation for a steel shell with liquid inside, surrounded by air
 ///
-/// Uses finite difference method with Crank-Nicolson time stepping.
-/// Three regions: liquid (0 to r_inner), shell (r_inner to r_outer), air (r_outer to infinity)
+/// Uses a finite-volume discretisation with Crank–Nicolson time stepping
+/// after a short backward-Euler start-up (`RANNACHER_STEPS`).
+/// Three regions: liquid (0 to r_inner), shell (r_inner to r_outer), air (r_outer to r_max)
 /// Returns snapshots of temperature distribution at specified times.
 pub fn simulate_sphere_heat_numerical(
     params: &SphereHeatParams,
@@ -203,7 +232,7 @@ pub fn simulate_sphere_heat_numerical(
     // Spatial discretization with adaptive grid
     // Uses piecewise-uniform grids: coarse in bulk, fine near interfaces
     // Scale resolution inversely with duration to keep total work bounded
-    // Domain size from multiplier. Convection modeled via Robin BC at r_max.
+    // Domain size from multiplier; the boundary condition at r_max is `outer_boundary`.
     let r_max = params.outer_radius_m * params.r_max_multiplier;
     let r_inner = params.inner_radius_m;
     let r_outer = params.outer_radius_m;
@@ -295,117 +324,167 @@ pub fn simulate_sphere_heat_numerical(
     let n_points = radii.len();
 
     // Find interface indices (closest grid point to each interface)
-    let inner_interface_idx = radii.iter()
+    let inner_interface_idx = radii
+        .iter()
         .enumerate()
-        .min_by(|(_, a), (_, b)| (*a - r_inner).abs().partial_cmp(&(*b - r_inner).abs()).unwrap())
-        .unwrap().0;
-    let outer_interface_idx = radii.iter()
+        .min_by(|(_, a), (_, b)| {
+            (*a - r_inner)
+                .abs()
+                .partial_cmp(&(*b - r_inner).abs())
+                .unwrap()
+        })
+        .unwrap()
+        .0;
+    let outer_interface_idx = radii
+        .iter()
         .enumerate()
-        .min_by(|(_, a), (_, b)| (*a - r_outer).abs().partial_cmp(&(*b - r_outer).abs()).unwrap())
-        .unwrap().0;
+        .min_by(|(_, a), (_, b)| {
+            (*a - r_outer)
+                .abs()
+                .partial_cmp(&(*b - r_outer).abs())
+                .unwrap()
+        })
+        .unwrap()
+        .0;
 
-    // Initialize temperature field - three regions
-    let mut temp: Vec<f64> = radii.iter().map(|&r| {
-        if r <= params.inner_radius_m {
-            params.liquid_temp_c
-        } else if r <= params.outer_radius_m {
-            params.shell_temp_c
+    // Finite-volume discretisation of ρc ∂T/∂t = (1/r²) ∂/∂r(r² k ∂T/∂r).
+    // Grid segment j = [r_j, r_{j+1}] lies in one region; the interface
+    // nodes sit on its boundaries. Node i owns the spherical shell between
+    // the half-points r_{i−½} and r_{i+½} (r_{−½} = 0, and the last node's
+    // shell ends at r_max), so an interface node's control volume is part
+    // liquid and part shell (or part shell and part medium).
+    let segment_value = |j: usize, liquid: f64, shell: f64, medium: f64| {
+        if j < inner_interface_idx {
+            liquid
+        } else if j < outer_interface_idx {
+            shell
         } else {
-            params.room_temp_c
+            medium
         }
-    }).collect();
+    };
+    let segment_rho_c = |j: usize| {
+        segment_value(
+            j,
+            params.liquid_material.density * params.liquid_material.specific_heat,
+            params.shell_material.density * params.shell_material.specific_heat,
+            params.medium_material.density * params.medium_material.specific_heat,
+        )
+    };
+    let segment_initial_temp = |j: usize| {
+        segment_value(
+            j,
+            params.liquid_temp_c,
+            params.shell_temp_c,
+            params.room_temp_c,
+        )
+    };
 
-    // Pre-compute material properties at each grid point
-    // Using conservative form: ρc ∂T/∂t = (1/r²) ∂/∂r(r² k ∂T/∂r)
-    // This properly enforces heat flux continuity k₁∂T/∂r = k₂∂T/∂r at interfaces
-    let k_arr: Vec<f64> = radii.iter().map(|&r| {
-        if r <= params.inner_radius_m {
-            params.liquid_material.conductivity
-        } else if r <= params.outer_radius_m {
-            params.shell_material.conductivity
-        } else {
-            params.medium_material.conductivity
-        }
-    }).collect();
+    // Half-point radii
+    let r_half: Vec<f64> = (0..n_points - 1)
+        .map(|i| 0.5 * (radii[i] + radii[i + 1]))
+        .collect();
 
-    let rho_c_arr: Vec<f64> = radii.iter().map(|&r| {
-        if r <= params.inner_radius_m {
-            params.liquid_material.density * params.liquid_material.specific_heat
-        } else if r <= params.outer_radius_m {
-            params.shell_material.density * params.shell_material.specific_heat
-        } else {
-            params.medium_material.density * params.medium_material.specific_heat
-        }
-    }).collect();
+    // Heat capacity of each node's control volume, per steradian [J/(K·sr)],
+    // split into the parts left and right of the node. Using ρc_i·r_i²·dr
+    // instead gives an interface node one side's ρc over the whole volume,
+    // which creates or destroys heat when the two sides exchange it.
+    let capacity_parts: Vec<(f64, f64)> = (0..n_points)
+        .map(|i| {
+            let (lo, hi) = control_volume_bounds(&radii, i);
+            let r3 = radii[i].powi(3);
+            let left = if i > 0 {
+                segment_rho_c(i - 1) * (r3 - lo.powi(3)) / 3.0
+            } else {
+                0.0
+            };
+            let right = if i < n_points - 1 {
+                segment_rho_c(i) * (hi.powi(3) - r3) / 3.0
+            } else {
+                0.0
+            };
+            (left, right)
+        })
+        .collect();
+    let capacity: Vec<f64> = capacity_parts.iter().map(|(l, r)| l + r).collect();
+
+    // Initial temperature: the control-volume average of the piecewise
+    // initial field, so the discrete heat content matches the physical one.
+    let mut temp: Vec<f64> = (0..n_points)
+        .map(|i| {
+            let (left, right) = capacity_parts[i];
+            // The clamped segment index is only reached where that part is 0 (i = 0, i = n−1).
+            let t_left = segment_initial_temp(i.saturating_sub(1));
+            let t_right = segment_initial_temp(i.min(n_points - 2));
+            (left * t_left + right * t_right) / (left + right)
+        })
+        .collect();
 
     // Pre-compute spacing between adjacent points
     let dr_arr: Vec<f64> = (0..n_points - 1).map(|i| radii[i + 1] - radii[i]).collect();
 
-    // Half-point conductivities: harmonic mean of k for flux continuity
-    let k_half: Vec<f64> = (0..n_points - 1).map(|i| {
-        2.0 * k_arr[i] * k_arr[i + 1] / (k_arr[i] + k_arr[i + 1])
-    }).collect();
+    // Conductance of each face r_{j+½}, per steradian [W/(K·sr)]. Segment j
+    // lies wholly in one material, so its conductivity is that material's;
+    // flux continuity across an interface holds because the interface node's
+    // two faces carry the two materials' fluxes into one shared control volume.
+    let face_conductance: Vec<f64> = (0..n_points - 1)
+        .map(|j| {
+            let k = segment_value(
+                j,
+                params.liquid_material.conductivity,
+                params.shell_material.conductivity,
+                params.medium_material.conductivity,
+            );
+            r_half[j].powi(2) * k / dr_arr[j]
+        })
+        .collect();
 
-    // Half-point radii
-    let r_half: Vec<f64> = (0..n_points - 1).map(|i| {
-        0.5 * (radii[i] + radii[i + 1])
-    }).collect();
-
-    // Pre-compute tridiagonal operator coefficients for the diffusion operator
+    // Tridiagonal diffusion operator
     // L(T)_i = lower[i]*T_{i-1} + diag[i]*T_i + upper[i]*T_{i+1} + source[i]
+    // Each face conductance r_{j+½}²·k_j/dr_j is divided by the capacity of
+    // the node it feeds, so Σ capacity·T is conserved by the face fluxes.
+    // At r = 0 the face has zero area and this reduces to 6k/(ρc·dr²).
     let mut lower = vec![0.0; n_points];
     let mut upper = vec![0.0; n_points];
     let mut diag_op = vec![0.0; n_points];
     let mut source = vec![0.0; n_points];
 
-    // Center (i=0): L'Hôpital's rule for spherical Laplacian at r=0
-    // lim_{r→0} (1/r²)∂/∂r(r²k∂T/∂r) = 3k ∂²T/∂r² ≈ 6k(T₁-T₀)/dr₁²
-    let dr1 = dr_arr[0];
-    upper[0] = 6.0 * k_arr[0] / (rho_c_arr[0] * dr1 * dr1);
-    diag_op[0] = -upper[0];
-
-    // Interior points (1..n_points-1)
-    for i in 1..n_points - 1 {
-        let r = radii[i];
-        let dr_right = dr_arr[i];
-        let dr_left = dr_arr[i - 1];
-        let dr_avg = 0.5 * (dr_left + dr_right);
-        let r2 = r * r;
-        let denom = rho_c_arr[i] * r2 * dr_avg;
-
-        lower[i] = r_half[i - 1] * r_half[i - 1] * k_half[i - 1] / (dr_left * denom);
-        upper[i] = r_half[i] * r_half[i] * k_half[i] / (dr_right * denom);
-        diag_op[i] = -(lower[i] + upper[i]);
-
-        // Convection at outer interface: implicit treatment (linear in T)
-        if i == outer_interface_idx && params.convection_coeff > 0.0 {
-            let conv_coeff = params.convection_coeff / (rho_c_arr[i] * dr_avg);
-            diag_op[i] -= conv_coeff;
-            source[i] += conv_coeff * params.room_temp_c;
+    for i in 0..n_points {
+        if i > 0 {
+            lower[i] = face_conductance[i - 1] / capacity[i];
         }
+        if i < n_points - 1 {
+            upper[i] = face_conductance[i] / capacity[i];
+        }
+        diag_op[i] = -(lower[i] + upper[i]);
     }
 
-    // Precompute dr_avg at the outer interface for per-step radiation updates
-    let dr_avg_outer = {
-        let dr_left = dr_arr[outer_interface_idx - 1];
-        let dr_right = dr_arr[outer_interface_idx.min(dr_arr.len() - 1)];
-        0.5 * (dr_left + dr_right)
-    };
+    // Surface losses at an interface node: a flux h·(T − T_ref) [W/m²]
+    // through area r_i² (per steradian) into capacity C_i gives the rate
+    // coefficient h·r_i²/C_i [1/s] on the diagonal and h·r_i²·T_ref/C_i in
+    // the source.
+    let area_per_capacity = |i: usize| radii[i].powi(2) / capacity[i];
+    let area_per_capacity_outer = area_per_capacity(outer_interface_idx);
+    let area_per_capacity_inner = area_per_capacity(inner_interface_idx);
+    let open_fraction = sphere_open_fraction(params.exposure);
+
+    // Convection at outer interface: implicit treatment (linear in T)
+    if params.convection_coeff > 0.0 {
+        let conv_coeff = params.convection_coeff * area_per_capacity_outer;
+        diag_op[outer_interface_idx] -= conv_coeff;
+        source[outer_interface_idx] += conv_coeff * params.room_temp_c;
+    }
+
     // Store base operator values at outer interface (without radiation)
     let base_diag_outer = diag_op[outer_interface_idx];
     let base_source_outer = source[outer_interface_idx];
 
-    // Precompute dr_avg at the inner interface for per-step evaporation updates
-    let dr_avg_inner = {
-        let dr_left = dr_arr[inner_interface_idx.saturating_sub(1)];
-        let dr_right = dr_arr[inner_interface_idx.min(dr_arr.len() - 1)];
-        0.5 * (dr_left + dr_right)
-    };
+    // Base operator values at the inner interface (without open-top losses)
     let base_diag_inner = diag_op[inner_interface_idx];
     let base_source_inner = source[inner_interface_idx];
 
-    // Time stepping: CN is unconditionally stable, so dt is chosen for accuracy.
-    // Use ~500 steps for the simulation, capped at snapshot_interval and 5s.
+    // Time stepping: the θ-scheme is unconditionally stable, so dt is chosen for accuracy:
+    // duration/500, capped at 0.5 s and at the snapshot interval. Runs longer than
+    // about 4 minutes therefore take 2 steps per simulated second (3,600 for 30 min).
     let snapshot_interval = duration_s / (num_snapshots - 1) as f64;
     let dt = (duration_s / 500.0).min(0.5).min(snapshot_interval);
 
@@ -429,90 +508,67 @@ pub fn simulate_sphere_heat_numerical(
     let mut sub_lhs = vec![0.0; n_points];
     let mut sup_lhs = vec![0.0; n_points];
 
+    let mut step = 0;
     while snapshots.len() < num_snapshots {
-        let half_dt = 0.5 * dt;
+        // θ-scheme weight: backward Euler (θ = 1) for the start-up steps,
+        // Crank–Nicolson (θ = ½) after.
+        let theta = if step < RANNACHER_STEPS { 1.0 } else { 0.5 };
+        let implicit_dt = theta * dt;
+        let explicit_dt = (1.0 - theta) * dt;
+        step += 1;
 
         // Linearized radiation at mug outer surface: h_rad = 4·ε·σ·T_m³
         // Re-linearized each step for accuracy, treated implicitly like convection.
         {
-            let t_k = temp[outer_interface_idx] + 273.15;
-            let t_room_k = params.room_temp_c + 273.15;
+            let t_k = temp[outer_interface_idx] + CELSIUS_TO_KELVIN;
+            let t_room_k = params.room_temp_c + CELSIUS_TO_KELVIN;
             let t_m = 0.5 * (t_k + t_room_k);
             let h_rad = 4.0 * params.shell_material.emissivity * STEFAN_BOLTZMANN * t_m.powi(3);
-            let rad_coeff = h_rad / (rho_c_arr[outer_interface_idx] * dr_avg_outer);
+            let rad_coeff = h_rad * area_per_capacity_outer;
             diag_op[outer_interface_idx] = base_diag_outer - rad_coeff;
             source[outer_interface_idx] = base_source_outer + rad_coeff * params.room_temp_c;
         }
 
-        // Coffee surface heat loss through the open top (scaled by evaporation_factor
-        // = lid opening fraction). Includes evaporation, convection, and radiation —
-        // all treated implicitly for stability.
-        if params.evaporation_factor > 0.0 {
-            let t_surf = temp[inner_interface_idx];
-            let t_room = params.room_temp_c;
-            let t_surf_k = t_surf + 273.15;
-            let t_room_k = t_room + 273.15;
-            let exposure = params.evaporation_factor;
-            let rho_c_inner = rho_c_arr[inner_interface_idx];
-            let mut total_coeff = 0.0; // accumulated h_eff / (ρc · dr) [1/s]
+        // Coffee surface heat loss through the open top, over the share of the
+        // liquid sphere's surface that the lid opening maps to: convection,
+        // radiation and evaporation, linearised at the current surface
+        // temperature as h·(T − t_ref) and treated implicitly. t_ref sits below
+        // room while the coffee evaporates.
+        if open_fraction > 0.0 {
+            let loss = open_top_loss(
+                temp[inner_interface_idx],
+                params.room_temp_c,
+                params.convection_coeff,
+            );
+            let coeff = open_fraction * loss.h * area_per_capacity_inner;
+            diag_op[inner_interface_idx] = base_diag_inner - coeff;
+            source[inner_interface_idx] = base_source_inner + coeff * loss.t_ref;
+        }
 
-            // 1. Evaporation (Lewis analogy, same physics as lumped model)
-            let h_mass = params.convection_coeff / (RHO_AIR * CP_AIR);
-            let rho_v_surf = saturation_vapor_pressure(t_surf) / (R_VAPOR * t_surf_k);
-            let rho_v_ambient = RELATIVE_HUMIDITY * saturation_vapor_pressure(t_room) / (R_VAPOR * t_room_k);
-            let delta_t = t_surf - t_room;
-            if rho_v_surf > rho_v_ambient && delta_t > 1.0 {
-                let q_evap = EVAP_ENHANCEMENT * exposure
-                    * h_mass * LATENT_HEAT_VAPORIZATION * (rho_v_surf - rho_v_ambient);
-                total_coeff += q_evap / (delta_t * rho_c_inner * dr_avg_inner);
+        // θ-scheme: (I − θ·dt·L) T^{n+1} = (I + (1−θ)·dt·L) T^n + dt·source
+        for i in 0..n_points {
+            let mut r = (1.0 + explicit_dt * diag_op[i]) * temp[i] + dt * source[i];
+            if i > 0 {
+                r += explicit_dt * lower[i] * temp[i - 1];
             }
-
-            // 2. Direct convection from coffee surface through opening
-            let h_conv_inner = exposure * params.convection_coeff;
-            total_coeff += h_conv_inner / (rho_c_inner * dr_avg_inner);
-
-            // 3. Radiation from coffee surface through opening
-            let t_m = 0.5 * (t_surf_k + t_room_k);
-            let h_rad_inner = exposure * 4.0 * 0.96 * STEFAN_BOLTZMANN * t_m.powi(3);
-            total_coeff += h_rad_inner / (rho_c_inner * dr_avg_inner);
-
-            diag_op[inner_interface_idx] = base_diag_inner - total_coeff;
-            source[inner_interface_idx] = base_source_inner + total_coeff * t_room;
+            if i < n_points - 1 {
+                r += explicit_dt * upper[i] * temp[i + 1];
+            }
+            rhs[i] = r;
+            sub_lhs[i] = -implicit_dt * lower[i];
+            dia_lhs[i] = 1.0 - implicit_dt * diag_op[i];
+            sup_lhs[i] = -implicit_dt * upper[i];
         }
 
-        // Build RHS: (I + dt/2 * L) T^n + dt * source
-        // Center (i=0)
-        rhs[0] = (1.0 + half_dt * diag_op[0]) * temp[0]
-                + half_dt * upper[0] * temp[1]
-                + dt * source[0];
-
-        // Interior points
-        for i in 1..n_points - 1 {
-            rhs[i] = half_dt * lower[i] * temp[i - 1]
-                   + (1.0 + half_dt * diag_op[i]) * temp[i]
-                   + half_dt * upper[i] * temp[i + 1]
-                   + dt * source[i];
+        // Ambient: r_max is held at room temperature (identity row).
+        // Insulated: the last row is the zero-flux finite-volume row built above.
+        if params.outer_boundary == OuterBoundary::Ambient {
+            let last = n_points - 1;
+            rhs[last] = params.room_temp_c;
+            sub_lhs[last] = 0.0;
+            dia_lhs[last] = 1.0;
+            sup_lhs[last] = 0.0;
         }
-
-        // Boundary at r_max: Dirichlet BC
-        rhs[n_points - 1] = params.room_temp_c;
-
-        // Build LHS tridiagonal: (I - dt/2 * L)
-        // Center
-        sub_lhs[0] = 0.0;
-        dia_lhs[0] = 1.0 - half_dt * diag_op[0];
-        sup_lhs[0] = -half_dt * upper[0];
-
-        for i in 1..n_points - 1 {
-            sub_lhs[i] = -half_dt * lower[i];
-            dia_lhs[i] = 1.0 - half_dt * diag_op[i];
-            sup_lhs[i] = -half_dt * upper[i];
-        }
-
-        // Boundary at r_max: identity row
-        sub_lhs[n_points - 1] = 0.0;
-        dia_lhs[n_points - 1] = 1.0;
-        sup_lhs[n_points - 1] = 0.0;
 
         // Solve tridiagonal system
         thomas_solve(&sub_lhs, &mut dia_lhs, &sup_lhs, &mut rhs);
@@ -539,98 +595,76 @@ pub fn simulate_sphere_heat_numerical(
 
 /// Get temperature at center of liquid over time
 pub fn liquid_center_temperature(snapshots: &[HeatSnapshot]) -> Vec<(f64, f64)> {
-    snapshots.iter().map(|s| (s.time_s, s.temperatures[0])).collect()
+    snapshots
+        .iter()
+        .map(|s| (s.time_s, s.temperatures[0]))
+        .collect()
+}
+
+/// Volume-weighted mean temperature over [r_lo, r_hi], using the solver's
+/// control volumes clipped to that range: node i covers [r_{i−½}, r_{i+½}],
+/// so an interface node contributes only its share inside the range. ρc is
+/// uniform within a region, so these are the solver's own heat-capacity
+/// weights. `None` when the range holds no volume.
+fn volume_average(s: &HeatSnapshot, r_lo: f64, r_hi: f64) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut volume = 0.0;
+    for i in 0..s.radii.len() {
+        let (cv_lo, cv_hi) = control_volume_bounds(&s.radii, i);
+        let lo = cv_lo.max(r_lo);
+        let hi = cv_hi.min(r_hi);
+        if hi > lo {
+            let v = hi.powi(3) - lo.powi(3);
+            sum += s.temperatures[i] * v;
+            volume += v;
+        }
+    }
+    (volume > 0.0).then(|| sum / volume)
 }
 
 /// Get average liquid temperature over time
 pub fn liquid_average_temperature(snapshots: &[HeatSnapshot]) -> Vec<(f64, f64)> {
-    snapshots.iter().map(|s| {
-        let interface = s.inner_interface_idx;
-        // Volume-weighted average (4πr²dr weighting)
-        let mut sum = 0.0;
-        let mut volume = 0.0;
-        for i in 0..=interface {
-            let r = s.radii[i];
-            let dr = if i == 0 {
-                s.radii[1] - s.radii[0]
-            } else {
-                s.radii[i] - s.radii[i - 1]
-            };
-            // Use spherical shell volume: V = 4π/3 * (r_outer³ - r_inner³)
-            // For point i, the shell extends from r - dr/2 to r + dr/2
-            let r_inner = (r - dr / 2.0).max(0.0);
-            let r_outer = r + dr / 2.0;
-            let shell_volume = 4.0 / 3.0 * std::f64::consts::PI * (r_outer.powi(3) - r_inner.powi(3));
-            sum += s.temperatures[i] * shell_volume;
-            volume += shell_volume;
-        }
-        (s.time_s, if volume > 0.0 { sum / volume } else { s.temperatures[0] })
-    }).collect()
+    snapshots
+        .iter()
+        .map(|s| {
+            let r_inner = s.radii[s.inner_interface_idx];
+            let t = volume_average(s, 0.0, r_inner).unwrap_or(s.temperatures[0]);
+            (s.time_s, t)
+        })
+        .collect()
 }
 
 /// Get volume-weighted liquid near-wall average temperature over time.
 /// `wall_fraction` is the fraction of liquid radius from the wall inward
 /// (e.g. 0.10 = outer 10% of the liquid radius).
-pub fn liquid_near_wall_temperature(snapshots: &[HeatSnapshot], wall_fraction: f64) -> Vec<(f64, f64)> {
-    snapshots.iter().map(|s| {
-        let interface = s.inner_interface_idx;
-        let r_inner = s.radii[interface];
-        let r_start = r_inner * (1.0 - wall_fraction);
-        let mut sum = 0.0;
-        let mut volume = 0.0;
-        for i in 0..=interface {
-            let r = s.radii[i];
-            if r < r_start {
-                continue;
-            }
-            let dr = if i == 0 {
-                s.radii[1] - s.radii[0]
-            } else {
-                s.radii[i] - s.radii[i - 1]
-            };
-            let r_lo = (r - dr / 2.0).max(r_start);
-            let r_hi = (r + dr / 2.0).min(r_inner);
-            let shell_volume = 4.0 / 3.0 * std::f64::consts::PI * (r_hi.powi(3) - r_lo.powi(3));
-            sum += s.temperatures[i] * shell_volume;
-            volume += shell_volume;
-        }
-        (s.time_s, if volume > 0.0 { sum / volume } else { s.temperatures[interface] })
-    }).collect()
+pub fn liquid_near_wall_temperature(
+    snapshots: &[HeatSnapshot],
+    wall_fraction: f64,
+) -> Vec<(f64, f64)> {
+    snapshots
+        .iter()
+        .map(|s| {
+            let interface = s.inner_interface_idx;
+            let r_inner = s.radii[interface];
+            let r_start = r_inner * (1.0 - wall_fraction);
+            let t = volume_average(s, r_start, r_inner).unwrap_or(s.temperatures[interface]);
+            (s.time_s, t)
+        })
+        .collect()
 }
 
 /// Get average shell temperature over time
 pub fn shell_average_temperature(snapshots: &[HeatSnapshot]) -> Vec<(f64, f64)> {
-    snapshots.iter().map(|s| {
-        let inner = s.inner_interface_idx;
-        let outer = s.outer_interface_idx;
-        // Volume-weighted average
-        let mut sum = 0.0;
-        let mut volume = 0.0;
-        for i in inner..=outer {
-            let r = s.radii[i];
-            let dr = if i == 0 {
-                s.radii[1] - s.radii[0]
-            } else {
-                s.radii[i] - s.radii[i - 1]
-            };
-            // Use spherical shell volume: V = 4π/3 * (r_outer³ - r_inner³)
-            let r_inner = (r - dr / 2.0).max(0.0);
-            let r_outer = r + dr / 2.0;
-            let shell_volume = 4.0 / 3.0 * std::f64::consts::PI * (r_outer.powi(3) - r_inner.powi(3));
-            sum += s.temperatures[i] * shell_volume;
-            volume += shell_volume;
-        }
-        (s.time_s, if volume > 0.0 { sum / volume } else { s.temperatures[inner] })
-    }).collect()
-}
-
-// Legacy aliases for backward compatibility
-pub fn ball_center_temperature(snapshots: &[HeatSnapshot]) -> Vec<(f64, f64)> {
-    liquid_center_temperature(snapshots)
-}
-
-pub fn ball_average_temperature(snapshots: &[HeatSnapshot]) -> Vec<(f64, f64)> {
-    liquid_average_temperature(snapshots)
+    snapshots
+        .iter()
+        .map(|s| {
+            let r_inner = s.radii[s.inner_interface_idx];
+            let r_outer = s.radii[s.outer_interface_idx];
+            let t = volume_average(s, r_inner, r_outer)
+                .unwrap_or(s.temperatures[s.inner_interface_idx]);
+            (s.time_s, t)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -660,7 +694,7 @@ mod tests {
         let params = SphereHeatParams::default();
         let snapshots = simulate_sphere_heat_numerical(&params, 100000.0, 20); // ~28 hours
 
-        // Should approach room temperature (Robin BC with larger domain is slower to equilibrate)
+        // Should approach room temperature (a larger air domain is slower to equilibrate)
         let final_center = snapshots.last().unwrap().temperatures[0];
         assert!(
             (final_center - params.room_temp_c).abs() < 50.0,
@@ -711,7 +745,7 @@ mod tests {
         // liquid-shell interface (no sharp jumps) after some time.
         let params = SphereHeatParams {
             liquid_temp_c: 90.0,
-            shell_temp_c: 22.0,  // Cold shell, will show interface effects
+            shell_temp_c: 22.0, // Cold shell, will show interface effects
             room_temp_c: 22.0,
             shell_material: HeatMaterial::ceramic(),
             ..SphereHeatParams::default()
@@ -729,7 +763,9 @@ mod tests {
         assert!(
             jump < 10.0,
             "Interface temperature jump should be small after 60s, got {:.1}°C ({:.1} vs {:.1})",
-            jump, t_liquid_side, t_shell_side
+            jump,
+            t_liquid_side,
+            t_shell_side
         );
     }
 
@@ -753,12 +789,18 @@ mod tests {
                 assert!(
                     t <= t_max_init + 1.0,
                     "Temperature at r={:.4} t={:.0}s is {:.1}°C, exceeds initial max {:.1}°C",
-                    snap.radii[i], snap.time_s, t, t_max_init
+                    snap.radii[i],
+                    snap.time_s,
+                    t,
+                    t_max_init
                 );
                 assert!(
                     t >= t_min_init - 1.0,
                     "Temperature at r={:.4} t={:.0}s is {:.1}°C, below room temp {:.1}°C",
-                    snap.radii[i], snap.time_s, t, t_min_init
+                    snap.radii[i],
+                    snap.time_s,
+                    t,
+                    t_min_init
                 );
             }
         }
@@ -777,8 +819,8 @@ mod tests {
         let snapshots = simulate_sphere_heat_numerical(&params, 300.0, 10);
 
         for snap in &snapshots[1..] {
-            let gradient = (snap.temperatures[1] - snap.temperatures[0])
-                / (snap.radii[1] - snap.radii[0]);
+            let gradient =
+                (snap.temperatures[1] - snap.temperatures[0]) / (snap.radii[1] - snap.radii[0]);
             // Gradient at center should be small relative to overall temp range
             let temp_range = snap.temperatures[0] - params.room_temp_c;
             if temp_range.abs() > 1.0 {
@@ -786,7 +828,8 @@ mod tests {
                 assert!(
                     normalized_gradient < 0.5,
                     "Center gradient too large at t={:.0}s: normalized={:.3}",
-                    snap.time_s, normalized_gradient
+                    snap.time_s,
+                    normalized_gradient
                 );
             }
         }
@@ -816,9 +859,11 @@ mod tests {
         // At every time step, preheated should be >= cold
         for (h, c) in avg_hot.iter().zip(avg_cold.iter()) {
             assert!(
-                h.1 >= c.1 - 0.5,  // small tolerance for numerical noise
+                h.1 >= c.1 - 0.5, // small tolerance for numerical noise
                 "Preheated should be warmer: t={:.0}s hot={:.1} cold={:.1}",
-                h.0, h.1, c.1
+                h.0,
+                h.1,
+                c.1
             );
         }
     }
@@ -831,11 +876,11 @@ mod tests {
             shell_temp_c: 90.0,
             room_temp_c: 20.0,
             shell_material: HeatMaterial::ceramic(),
-            evaporation_factor: 0.0,
+            exposure: 0.0,
             ..SphereHeatParams::default()
         };
         let with_evap = SphereHeatParams {
-            evaporation_factor: 1.0,
+            exposure: 1.0,
             ..base.clone()
         };
 
@@ -850,7 +895,31 @@ mod tests {
         assert!(
             final_evap < final_no_evap,
             "Evaporative cooling should make liquid cooler: evap={:.1} no_evap={:.1}",
-            final_evap, final_no_evap
+            final_evap,
+            final_no_evap
+        );
+    }
+
+    #[test]
+    fn open_top_cools_liquid_at_room_below_room() {
+        // Evaporation has no cutoff: liquid starting at room temperature keeps
+        // evaporating and drops below room, without NaN or blow-up.
+        let params = SphereHeatParams {
+            liquid_temp_c: 22.0,
+            shell_temp_c: 22.0,
+            room_temp_c: 22.0,
+            shell_material: HeatMaterial::ceramic(),
+            exposure: 1.0,
+            ..SphereHeatParams::default()
+        };
+        let snaps = simulate_sphere_heat_numerical(&params, 600.0, 10);
+        assert!(snaps
+            .iter()
+            .all(|s| s.temperatures.iter().all(|t| t.is_finite())));
+        let final_avg = liquid_average_temperature(&snaps).last().unwrap().1;
+        assert!(
+            final_avg < 22.0 && final_avg > 10.0,
+            "liquid average after 10 min = {final_avg:.3} °C, expected in (10, 22)"
         );
     }
 
@@ -881,14 +950,72 @@ mod tests {
         assert!(
             final_high < final_low,
             "Higher convection should cool faster: h=25 → {:.1}°C, h=5 → {:.1}°C",
-            final_high, final_low
+            final_high,
+            final_low
         );
     }
 
-    /// Benchmark: all 4 panel simulations (hot/cold × enclosed/exposed)
-    /// must complete in < 2 seconds to avoid WASM UI hangs.
+    /// Number of times the step-to-step change of `series` flips sign,
+    /// ignoring steps with no change.
+    fn sign_changes(series: impl Iterator<Item = f64>) -> usize {
+        let values: Vec<f64> = series.collect();
+        let signs: Vec<f64> = values
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .filter(|d| *d != 0.0)
+            .map(f64::signum)
+            .collect();
+        signs.windows(2).filter(|w| w[0] != w[1]).count()
+    }
+
+    /// A steel shell's interface nodes see α·dt/dr² ≈ 10⁴, where pure
+    /// Crank–Nicolson barely damps the initial jump and the node alternates
+    /// between two temperatures every step. Recording every step exposes it.
     #[test]
-    fn test_panel_timing() {
+    fn interface_nodes_do_not_ring() {
+        let inner_radius_m = (3.0 * 350e-6 / (4.0 * std::f64::consts::PI)).cbrt();
+        let params = SphereHeatParams {
+            inner_radius_m,
+            outer_radius_m: inner_radius_m + 5e-3,
+            liquid_temp_c: 95.0,
+            shell_temp_c: 22.0,
+            room_temp_c: 22.0,
+            shell_material: HeatMaterial::from_mug(MugMaterial::StainlessSteel, 0.1),
+            ..SphereHeatParams::default()
+        };
+        let duration_s = 1800.0;
+        // dt is capped at 0.5 s, so one snapshot per step.
+        let num_steps = (duration_s / 0.5) as usize;
+        let snapshots = simulate_sphere_heat_numerical(&params, duration_s, num_steps + 1);
+        assert_eq!(snapshots.len(), num_steps + 1);
+        assert!(
+            (snapshots[1].time_s - 0.5).abs() < 1e-9,
+            "one snapshot per step"
+        );
+
+        let first = &snapshots[0];
+        for (name, idx) in [
+            ("inner", first.inner_interface_idx),
+            ("outer", first.outer_interface_idx),
+        ] {
+            let series = snapshots[RANNACHER_STEPS..]
+                .iter()
+                .map(|s| s.temperatures[idx]);
+            let changes = sign_changes(series);
+            assert!(
+                changes <= 2,
+                "{name} interface node changes direction {changes} times"
+            );
+        }
+    }
+
+    /// Benchmark: all 4 panel simulations (hot/cold × enclosed/exposed)
+    /// must complete in < 2 seconds to avoid WASM UI hangs. Wall-clock, so it
+    /// runs with the other perf checks (`make bench`), not under coverage
+    /// instrumentation alongside parallel tests.
+    #[test]
+    #[ignore = "timing-sensitive; run with make bench"]
+    fn perf_panel_timing() {
         let inner_r_cm = (3.0 * 180.0_f64 / (4.0 * std::f64::consts::PI)).cbrt();
         let outer_r_cm = inner_r_cm + 5.0 / 10.0;
         let chart_max_r_cm = 10.0_f64;
@@ -904,26 +1031,42 @@ mod tests {
             shell_material: HeatMaterial::ceramic(),
             liquid_material: HeatMaterial::water(),
             medium_material: HeatMaterial::air(),
-            evaporation_factor: 0.0,
+            exposure: 0.0,
             convection_coeff: 10.0,
             r_max_multiplier: chart_max_r_cm / outer_r_cm,
+            outer_boundary: OuterBoundary::Ambient,
         };
 
         let t0 = std::time::Instant::now();
         simulate_sphere_heat_numerical(&base, dur, snaps);
-        simulate_sphere_heat_numerical(&SphereHeatParams { shell_temp_c: 22.0, ..base.clone() }, dur, snaps);
-        simulate_sphere_heat_numerical(&SphereHeatParams {
-            shell_material: HeatMaterial::air(),
-            evaporation_factor: 1.0,
-            convection_coeff: 15.0,
-            ..base.clone()
-        }, dur, snaps);
-        simulate_sphere_heat_numerical(&SphereHeatParams {
-            shell_material: HeatMaterial::air(),
-            evaporation_factor: 1.0,
-            convection_coeff: 15.0,
-            ..base
-        }, dur, snaps);
+        simulate_sphere_heat_numerical(
+            &SphereHeatParams {
+                shell_temp_c: 22.0,
+                ..base.clone()
+            },
+            dur,
+            snaps,
+        );
+        simulate_sphere_heat_numerical(
+            &SphereHeatParams {
+                shell_material: HeatMaterial::air(),
+                exposure: 1.0,
+                convection_coeff: 15.0,
+                ..base.clone()
+            },
+            dur,
+            snaps,
+        );
+        simulate_sphere_heat_numerical(
+            &SphereHeatParams {
+                shell_material: HeatMaterial::air(),
+                exposure: 1.0,
+                convection_coeff: 15.0,
+                ..base
+            },
+            dur,
+            snaps,
+        );
         let total = t0.elapsed();
 
         assert!(total.as_secs() < 2, "4 sims took {:?}, must be < 2s", total);

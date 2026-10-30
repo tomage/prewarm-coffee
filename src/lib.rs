@@ -4,14 +4,20 @@ pub mod haptics;
 pub mod pages;
 pub mod physics;
 pub mod storage;
+pub mod timing;
 
-use components::{App, NavBar};
+use components::{
+    adopt_overlay_entry_on_load, overlay_popstate_handled, App, NavBar, PanelSettings,
+};
 use leptos::*;
 use leptos_router::*;
-use pages::{AboutPage, NotFoundPage, TheoryLumpedPage, TheoryHeatEquationPage, TheoryPage};
-use storage::{is_applying_external, listen_for_cross_tab_sync, save_settings, SharedSettings};
-use wasm_bindgen::prelude::*;
+use pages::{AboutPage, NotFoundPage, TheoryHeatEquationPage, TheoryLumpedPage, TheoryPage};
+use storage::{
+    flush_pending_save_on_pagehide, is_applying_external, listen_for_cross_tab_sync, schedule_save,
+    SharedSettings,
+};
 use wasm_bindgen::closure::Closure;
+use wasm_bindgen::prelude::*;
 
 /// Workaround for Leptos 0.6 router not re-rendering on browser back/forward.
 ///
@@ -19,21 +25,43 @@ use wasm_bindgen::closure::Closure;
 /// always trigger the `<Routes>` component to re-evaluate which view to show.
 /// We work around this by forcing a full page reload on popstate, which
 /// re-initializes the WASM app at the correct URL. State is preserved via
-/// localStorage (SharedSettings) and scroll restoration.
+/// localStorage (SharedSettings), and the page's scroll position is restored
+/// after the reload (see `storage::prepare_popstate_reload`).
+///
+/// A popstate that pops the mobile simulator overlay's own history entry is
+/// not a navigation: it closes the overlay and the page stays. A page loaded
+/// onto that entry (a reload with the overlay open) adopts it first.
 fn setup_popstate_reload() {
+    adopt_overlay_entry_on_load();
     let closure = Closure::wrap(Box::new(move |_: web_sys::Event| {
+        if overlay_popstate_handled() {
+            return;
+        }
+        storage::prepare_popstate_reload();
         if let Some(window) = web_sys::window() {
             let _ = window.location().reload();
         }
     }) as Box<dyn Fn(web_sys::Event)>);
 
     if let Some(window) = web_sys::window() {
-        let _ = window.add_event_listener_with_callback(
-            "popstate",
-            closure.as_ref().unchecked_ref(),
-        );
+        let _ =
+            window.add_event_listener_with_callback("popstate", closure.as_ref().unchecked_ref());
     }
     closure.forget();
+}
+
+/// Tells scroll restoration about client-side route changes (link clicks).
+/// Inside `<Router>`, which `use_location` needs.
+#[component]
+fn ScrollTracker() -> impl IntoView {
+    let location = use_location();
+    create_effect(move |prev: Option<String>| {
+        let path = location.pathname.get();
+        if prev.is_some_and(|prev| prev != path) {
+            storage::on_route_change(&path);
+        }
+        path
+    });
 }
 
 /// Root component with routing
@@ -77,21 +105,31 @@ fn Root() -> impl IntoView {
 fn RootInner() -> impl IntoView {
     // Shared settings singleton — same RwSignals for all routes
     let settings = SharedSettings::instance();
+    // Created here so their signals belong to the app root: created inside a
+    // panel, they would be disposed when the route unmounts that panel.
+    PanelSettings::instance();
 
-    // Save to localStorage whenever any signal changes
-    // (skip when applying changes received from another tab)
-    create_effect(move |_| {
-        let stored = settings.to_stored();
-        if !is_applying_external() {
-            save_settings(&stored);
+    // Save to localStorage whenever any signal changes, debounced so a slider
+    // drag is one write (skip when applying changes received from another tab).
+    // The effect runs once on creation; skip that run so nothing is written
+    // until a setting changes, and stored data (possibly from a newer version)
+    // stays intact until then; the first save merges into it. A `?tab=` link
+    // selecting a different tab than the stored one is such a change.
+    create_effect(move |prev: Option<()>| {
+        settings.to_stored(); // track every setting
+        if prev.is_some() && !is_applying_external() {
+            schedule_save();
         }
     });
+    flush_pending_save_on_pagehide();
 
-    // Cross-tab sync: storage events + visibilitychange fallback
+    // Cross-tab sync: storage events, plus a re-read on focus and
+    // visibilitychange for events missed while the tab was in the background
     listen_for_cross_tab_sync();
 
     view! {
         <Router>
+            <ScrollTracker/>
             <NavBar/>
             <Routes>
                 <Route path="/" view=App/>
@@ -112,6 +150,5 @@ pub fn main() {
     storage::setup_scroll_restoration();
     setup_popstate_reload();
     mount_to_body(Root);
-    // Restore scroll after a brief delay to ensure content has rendered
-    storage::restore_scroll_after_delay(50);
+    storage::restore_scroll_on_load();
 }

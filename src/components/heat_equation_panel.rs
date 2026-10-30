@@ -1,25 +1,24 @@
-use crate::components::{MugControls, ProfileChart, SimulationResults};
 use crate::components::solver_toggle::create_solver_signals;
-use crate::physics::{
-    apply_exposure_correction, compute_comparison, convert_snapshots,
-    seconds_to_minutes, compute_eigenmodes,
-    liquid_average_temperature, liquid_near_wall_temperature, shell_average_temperature,
-    simulate_sphere_heat_numerical, simulate_three_region_analytical,
-    HeatMaterial, HeatSnapshot,
-    SphereHeatParams, ThreeRegionParams,
-    MAX_SIMULATION_MINUTES, LID_TO_SPHERE_AREA_RATIO,
+use crate::components::throttled::throttled;
+use crate::components::{
+    ControlsLayout, MugControls, PanelSettings, ProfileChart, SimTab, SimulationResults,
 };
-use crate::storage::{SharedSettings, StoredSettings};
+use crate::physics::{
+    compute_comparison, convert_snapshots, liquid_average_temperature,
+    liquid_near_wall_temperature, seconds_to_minutes, shell_average_temperature,
+    simulate_sphere_heat_numerical, simulate_three_region_relinearised, HeatMaterial, HeatSnapshot,
+    OuterBoundary, SphereHeatParams, ThreeRegionMug, ANALYTICAL_SEGMENTS, MAX_SIMULATION_MINUTES,
+};
+use crate::storage::SharedSettings;
+use crate::timing::SOLVE_THROTTLE_MS;
 use leptos::*;
 use std::cell::Cell;
 use std::rc::Rc;
 
-/// Run a heat simulation (analytical or numerical) with the given parameters.
-///
-/// Centralises the duplicated simulation-construction logic that differs only
-/// in shell temperature, shell material, convection multiplier, and
-/// evaporation factor.
-fn run_heat_sim(
+/// Everything one heat simulation run depends on. The hot and cold runs
+/// differ only in `shell_temp`.
+#[derive(Clone, PartialEq)]
+struct HeatSimInput {
     use_analytical: bool,
     inner_r_cm: f64,
     outer_r_cm: f64,
@@ -34,47 +33,56 @@ fn run_heat_sim(
     num_modes: usize,
     h_conv: f64,
     r_max_mult: f64,
-    evaporation_factor: f64,
-) -> Vec<HeatSnapshot> {
+    /// Lid openness, 0–1.
+    exposure: f64,
+}
+
+/// The inputs of the panel's two runs: preheated and cold mug.
+#[derive(Clone, PartialEq)]
+struct HeatRunInputs {
+    hot: HeatSimInput,
+    cold: HeatSimInput,
+}
+
+/// Run a heat simulation (analytical or numerical) for the given input.
+fn run_heat_sim(input: HeatSimInput) -> Vec<HeatSnapshot> {
+    let HeatSimInput {
+        use_analytical,
+        inner_r_cm,
+        outer_r_cm,
+        r_max_cm,
+        chart_max_r_cm,
+        liquid_temp,
+        shell_temp,
+        room_temp,
+        shell_mat,
+        duration_s,
+        num_snapshots,
+        num_modes,
+        h_conv,
+        r_max_mult,
+        exposure,
+    } = input;
     if use_analytical {
-        let water = HeatMaterial::water();
-        let air = HeatMaterial::air();
-
-        // Enhance h_conv with linearized radiation from the mug outer surface.
-        //
-        // The analytical eigenfunction expansion can only model heat loss at
-        // the outer boundary (r = r_outer). Inner-surface effects (evaporation,
-        // lid-opening convection/radiation) act at r = r_inner and are only
-        // captured by the numerical solver. Remapping them to the outer boundary
-        // destroys the eigenvalue structure (τ_1 collapses from ~1000s to ~150s).
-        let h_conv_eff = {
-            let sigma: f64 = 5.670_374e-8;
-            let t_avg_k = 0.5 * (liquid_temp + room_temp) + 273.15;
-            let h_rad_outer = 4.0 * shell_mat.emissivity * sigma * t_avg_k.powi(3);
-            h_conv + h_rad_outer
-        };
-
-        let params = ThreeRegionParams {
+        let mug = ThreeRegionMug {
             r_inner: inner_r_cm / 100.0,
             r_outer: outer_r_cm / 100.0,
             r_max: r_max_cm / 100.0,
-            alpha_1: water.diffusivity(),
-            alpha_2: shell_mat.diffusivity(),
-            alpha_3: air.diffusivity(),
-            k_1: water.conductivity,
-            k_2: shell_mat.conductivity,
-            k_3: air.conductivity,
-            t_liquid_init: liquid_temp,
-            t_shell_init: shell_temp,
-            t_ambient: room_temp,
+            shell: shell_mat,
+            liquid_temp_c: liquid_temp,
+            shell_temp_c: shell_temp,
+            room_temp_c: room_temp,
+            h_conv,
+            exposure,
             num_modes,
-            h_conv: h_conv_eff,
-            h_inner: 0.0,
         };
-        let modes = compute_eigenmodes(&params);
-        let display_r_max = chart_max_r_cm / 100.0;
-        convert_snapshots(simulate_three_region_analytical(
-            &params, &modes, duration_s, num_snapshots, 80, display_r_max,
+        convert_snapshots(simulate_three_region_relinearised(
+            &mug,
+            ANALYTICAL_SEGMENTS,
+            duration_s,
+            num_snapshots,
+            80,
+            chart_max_r_cm / 100.0,
         ))
     } else {
         let params = SphereHeatParams {
@@ -86,16 +94,104 @@ fn run_heat_sim(
             shell_material: shell_mat,
             liquid_material: HeatMaterial::water(),
             medium_material: HeatMaterial::air(),
-            evaporation_factor,
+            exposure,
             convection_coeff: h_conv,
             r_max_multiplier: r_max_mult,
+            outer_boundary: OuterBoundary::Ambient,
         };
         simulate_sphere_heat_numerical(&params, duration_s, num_snapshots)
     }
 }
 
+/// Inner radius (cm) of the spherical mug holding `volume_ml`
+/// (V = 4/3 π r³, so r = (3V/4π)^(1/3); ml = cm³).
+fn inner_radius_for_volume(volume_ml: f64) -> f64 {
+    (3.0 * volume_ml / (4.0 * std::f64::consts::PI)).cbrt()
+}
+
+/// The heat-equation panel's own controls: snapshots, series terms and
+/// domain size. They render inside `MugControls` (its `layout` decides the
+/// heading and the ids).
 #[component]
-pub fn HeatEquationPanel() -> impl IntoView {
+pub fn HeatEqExtraControls(#[prop(optional)] layout: ControlsLayout) -> impl IntoView {
+    let settings = SharedSettings::instance();
+    let panel = PanelSettings::instance();
+    let (num_snapshots, set_num_snapshots) = panel.num_snapshots.split();
+    let (num_modes, set_num_modes) = panel.num_modes.split();
+    let (r_max_mult, set_r_max_mult) = panel.r_max_mult.split();
+    let use_analytical = settings.use_analytical_heat_eq.read_only();
+    let r_max_cm = move || {
+        (inner_radius_for_volume(settings.volume_ml.get())
+            + settings.wall_thickness_mm.get() / 10.0)
+            * r_max_mult.get()
+    };
+    let prefix = layout.id_prefix();
+    let id = move |name: &str| format!("{prefix}{name}");
+
+    view! {
+        {(layout == ControlsLayout::Flat).then(|| view! { <h3>"Heat Equation"</h3> })}
+
+        <div class="control-group">
+            <label for=id("pde-snapshots")>"Snapshots: " {move || format!("{}", num_snapshots.get())}</label>
+            <input
+                type="range"
+                id=id("pde-snapshots")
+                min="20"
+                max="200"
+                step="10"
+                prop:value=move || num_snapshots.get()
+                on:input=move |ev| {
+                    if let Ok(v) = event_target_value(&ev).parse::<usize>() {
+                        set_num_snapshots.set(v);
+                    }
+                }
+            />
+            <span class="control-hint">"Time resolution (output frames)"</span>
+        </div>
+
+        <div class="control-group" class:disabled=move || !use_analytical.get()>
+            <label for=id("pde-modes")>"Series terms: " {move || num_modes.get()}</label>
+            <input
+                type="range"
+                id=id("pde-modes")
+                min="1"
+                max="100"
+                step="1"
+                prop:value=move || num_modes.get()
+                prop:disabled=move || !use_analytical.get()
+                on:input=move |ev| {
+                    if let Ok(v) = event_target_value(&ev).parse::<usize>() {
+                        set_num_modes.set(v);
+                    }
+                }
+            />
+            <span class="control-hint">"Eigenfunction terms (analytical only)"</span>
+        </div>
+
+        <div class="control-group">
+            <label for=id("pde-rmax")>"r_max: " {move || format!("{:.1}x r_outer ({:.1} cm)", r_max_mult.get(), r_max_cm())}</label>
+            <input
+                type="range"
+                id=id("pde-rmax")
+                min="1.5"
+                max="10"
+                step="0.5"
+                prop:value=move || r_max_mult.get()
+                on:input=move |ev| {
+                    if let Ok(v) = event_target_value(&ev).parse::<f64>() {
+                        set_r_max_mult.set(v);
+                    }
+                }
+            />
+            <span class="control-hint">"Simulation domain extent"</span>
+        </div>
+    }
+}
+
+/// `with_controls = false` leaves the controls to the caller (the overlay
+/// renders them outside the panel).
+#[component]
+pub fn HeatEquationPanel(#[prop(default = true)] with_controls: bool) -> impl IntoView {
     // Use shared settings singleton — same RwSignals across all routes
     let settings = SharedSettings::instance();
     let material = settings.material;
@@ -108,34 +204,29 @@ pub fn HeatEquationPanel() -> impl IntoView {
     let min_drinkable_c = settings.min_drinkable_c;
     let duration_minutes = settings.duration_minutes;
     let convection_coeff = settings.h_conv;
-    let (exposure_pct, set_exposure_pct) = settings.exposure_pct.split();
-    let (emissivity, set_emissivity) = settings.emissivity.split();
+    let exposure_pct = settings.exposure_pct.read_only();
+    let emissivity = settings.emissivity.read_only();
 
-    // Panel-local signals
-    let (selected_time_idx, set_selected_time_idx) = create_signal(2_usize);
-    let (num_snapshots, set_num_snapshots) = create_signal(100_usize);
-    let (num_modes, set_num_modes) = create_signal(50_usize);
-    let (r_max_mult, set_r_max_mult) = create_signal(10.0_f64);
+    let panel = PanelSettings::instance();
+    let num_snapshots = panel.num_snapshots;
+    let num_modes = panel.num_modes;
+    let r_max_mult = panel.r_max_mult;
+    let (selected_time_idx, set_selected_time_idx) = panel.selected_time_idx.split();
     let (use_near_wall, set_use_near_wall) = settings.use_near_wall.split();
 
-    let (use_analytical, set_use_analytical, sim_ready, set_sim_ready) = create_solver_signals(settings.use_analytical_heat_eq);
+    let (use_analytical, set_use_analytical, sim_ready, set_sim_ready) =
+        create_solver_signals(settings.use_analytical_heat_eq);
 
     // Track compute time for display — Cells written inside memos, read by effect
     let (compute_time_ms, set_compute_time_ms) = create_signal(0.0_f64);
     let sim_time = Rc::new(Cell::new(0.0_f64));
     let sim_cold_time = Rc::new(Cell::new(0.0_f64));
 
-    // Derived: inner radius from volume (V = 4/3 π r³, so r = (3V/4π)^(1/3))
-    // volume_ml = cm³
-    let inner_radius_cm = create_memo(move |_| {
-        let v = volume_ml.get();
-        (3.0 * v / (4.0 * std::f64::consts::PI)).cbrt()
-    });
+    let inner_radius_cm = create_memo(move |_| inner_radius_for_volume(volume_ml.get()));
 
     // Derived: outer radius = inner + shell thickness
-    let outer_radius_cm = create_memo(move |_| {
-        inner_radius_cm.get() + shell_thickness_mm.get() / 10.0
-    });
+    let outer_radius_cm =
+        create_memo(move |_| inner_radius_cm.get() + shell_thickness_mm.get() / 10.0);
 
     // Chart radial extent — fixed at 10 cm for consistent display
     let chart_max_r_cm = create_memo(move |_| 10.0_f64);
@@ -146,129 +237,110 @@ pub fn HeatEquationPanel() -> impl IntoView {
     // Helper: build HeatMaterial from the current mug material signal
     let shell_material_from_mug = move || {
         let mat = material.get();
-        HeatMaterial {
-            conductivity: mat.thermal_conductivity(),
-            density: mat.density(),
-            specific_heat: mat.specific_heat(),
-            emissivity: emissivity.get(),
-        }
+        HeatMaterial::from_mug(mat, emissivity.get())
     };
 
-    // Hot mug simulation: shell starts at preheat temperature
-    // Exposure fraction drives evaporation + convection + radiation at the coffee
-    // surface directly, rather than relying on post-hoc blending.
+    // Simulation input from the current settings; only the shell's starting
+    // temperature differs between the hot and cold runs.
+    let sim_input = move |shell_temp: f64| HeatSimInput {
+        use_analytical: use_analytical.get(),
+        inner_r_cm: inner_radius_cm.get(),
+        outer_r_cm: outer_radius_cm.get(),
+        r_max_cm: r_max_cm.get(),
+        chart_max_r_cm: chart_max_r_cm.get(),
+        liquid_temp: liquid_temp_c.get(),
+        shell_temp,
+        room_temp: room_temp_c.get(),
+        shell_mat: shell_material_from_mug(),
+        duration_s: duration_minutes.get() as f64 * 60.0,
+        num_snapshots: num_snapshots.get(),
+        num_modes: num_modes.get(),
+        h_conv: convection_coeff.get(),
+        r_max_mult: r_max_mult.get(),
+        exposure: exposure_pct.get() / 100.0,
+    };
+
+    // Hot mug starts at the preheat temperature, cold mug at room temperature.
+    let run_inputs = create_memo(move |_| HeatRunInputs {
+        hot: sim_input(shell_temp_c.get()),
+        cold: sim_input(room_temp_c.get()),
+    });
+    // Both solves are expensive: during a drag they follow the inputs at most
+    // once per window, and always finish on the latest inputs.
+    let solve_inputs = throttled(run_inputs, SOLVE_THROTTLE_MS);
+    // One slice per solve: memo equality stops a change that only affects one
+    // run (e.g. the preheat temperature) from re-running the other.
+    let hot_input = create_memo(move |_| solve_inputs.with(|inputs| inputs.hot.clone()));
+    let cold_input = create_memo(move |_| solve_inputs.with(|inputs| inputs.cold.clone()));
+
+    // Hot mug simulation
     let simulation_data = {
         let timing = sim_time.clone();
         create_memo(move |_| {
             let start = js_sys::Date::now();
-            let result = run_heat_sim(
-                use_analytical.get(),
-                inner_radius_cm.get(), outer_radius_cm.get(),
-                r_max_cm.get(), chart_max_r_cm.get(),
-                liquid_temp_c.get(), shell_temp_c.get(), room_temp_c.get(),
-                shell_material_from_mug(),
-                duration_minutes.get() as f64 * 60.0, num_snapshots.get(), num_modes.get(),
-                convection_coeff.get(), r_max_mult.get(),
-                exposure_pct.get() / 100.0 * LID_TO_SPHERE_AREA_RATIO,
-            );
+            let result = run_heat_sim(hot_input.get());
             timing.set(js_sys::Date::now() - start);
             result
         })
     };
 
-    // Cold mug simulation: shell starts at room temperature
+    // Cold mug simulation
     let simulation_data_cold = {
         let timing = sim_cold_time.clone();
         create_memo(move |_| {
             let start = js_sys::Date::now();
-            let result = run_heat_sim(
-                use_analytical.get(),
-                inner_radius_cm.get(), outer_radius_cm.get(),
-                r_max_cm.get(), chart_max_r_cm.get(),
-                liquid_temp_c.get(), room_temp_c.get(), room_temp_c.get(),
-                shell_material_from_mug(),
-                duration_minutes.get() as f64 * 60.0, num_snapshots.get(), num_modes.get(),
-                convection_coeff.get(), r_max_mult.get(),
-                exposure_pct.get() / 100.0 * LID_TO_SPHERE_AREA_RATIO,
-            );
+            let result = run_heat_sim(cold_input.get());
             timing.set(js_sys::Date::now() - start);
             result
         })
     };
 
-    // Apply exposure correction for analytical mode.
-    // The analytical solver doesn't model lid-opening heat loss (h_inner=0),
-    // so we apply a multiplicative decay correction:
-    //   T(r,t) = T_amb + [T_3region(r,t) - T_amb] × exp(-t/τ)
-    // This decouples the shell-conduction and exposure effects.
-    let simulation_data_corrected = create_memo(move |_| -> Vec<HeatSnapshot> {
-        let data = simulation_data.get();
-        if !use_analytical.get() {
-            return data;
-        }
-        apply_exposure_correction(
-            data, exposure_pct.get() / 100.0, room_temp_c.get(),
-            convection_coeff.get(), inner_radius_cm.get() / 100.0,
-            liquid_temp_c.get(),
-        )
-    });
-
-    let simulation_data_cold_corrected = create_memo(move |_| -> Vec<HeatSnapshot> {
-        let data = simulation_data_cold.get();
-        if !use_analytical.get() {
-            return data;
-        }
-        apply_exposure_correction(
-            data, exposure_pct.get() / 100.0, room_temp_c.get(),
-            convection_coeff.get(), inner_radius_cm.get() / 100.0,
-            liquid_temp_c.get(),
-        )
-    });
-
     // Read timing from Cells written by simulation memos (memos run before effects in Leptos 0.6)
     create_effect(move |_| {
-        let _ = simulation_data_corrected.get();
-        let _ = simulation_data_cold_corrected.get();
+        let _ = simulation_data.get();
+        let _ = simulation_data_cold.get();
         let total = sim_time.get() + sim_cold_time.get();
         set_compute_time_ms.set(total);
         set_sim_ready.set(true);
     });
 
-    let liquid_avg_temps = create_memo(move |_| {
-        liquid_average_temperature(&simulation_data_corrected.get())
-    });
+    let liquid_avg_temps = create_memo(move |_| liquid_average_temperature(&simulation_data.get()));
 
-    let shell_avg_temps = create_memo(move |_| {
-        shell_average_temperature(&simulation_data_corrected.get())
-    });
+    let shell_avg_temps = create_memo(move |_| shell_average_temperature(&simulation_data.get()));
 
-    let liquid_avg_temps_cold = create_memo(move |_| {
-        liquid_average_temperature(&simulation_data_cold_corrected.get())
-    });
+    let liquid_avg_temps_cold =
+        create_memo(move |_| liquid_average_temperature(&simulation_data_cold.get()));
 
-    let shell_avg_temps_cold = create_memo(move |_| {
-        shell_average_temperature(&simulation_data_cold_corrected.get())
-    });
+    let shell_avg_temps_cold =
+        create_memo(move |_| shell_average_temperature(&simulation_data_cold.get()));
 
     // Near-wall liquid temperatures (outer 10% of liquid radius)
     let wall_fraction = 0.10;
-    let liquid_wall_temps = create_memo(move |_| {
-        liquid_near_wall_temperature(&simulation_data_corrected.get(), wall_fraction)
-    });
+    let liquid_wall_temps =
+        create_memo(move |_| liquid_near_wall_temperature(&simulation_data.get(), wall_fraction));
     let liquid_wall_temps_cold = create_memo(move |_| {
-        liquid_near_wall_temperature(&simulation_data_cold_corrected.get(), wall_fraction)
+        liquid_near_wall_temperature(&simulation_data_cold.get(), wall_fraction)
     });
 
     // Active liquid temps — switches between avg and near-wall based on toggle
     let active_liquid_temps = create_memo(move |_| {
-        if use_near_wall.get() { liquid_wall_temps.get() } else { liquid_avg_temps.get() }
+        if use_near_wall.get() {
+            liquid_wall_temps.get()
+        } else {
+            liquid_avg_temps.get()
+        }
     });
     let active_liquid_temps_cold = create_memo(move |_| {
-        if use_near_wall.get() { liquid_wall_temps_cold.get() } else { liquid_avg_temps_cold.get() }
+        if use_near_wall.get() {
+            liquid_wall_temps_cold.get()
+        } else {
+            liquid_avg_temps_cold.get()
+        }
     });
 
     // Convert PDE data (time_seconds, temp) to (time_minutes, temp) for charts
-    let cold_coffee_chart = create_memo(move |_| seconds_to_minutes(&active_liquid_temps_cold.get()));
+    let cold_coffee_chart =
+        create_memo(move |_| seconds_to_minutes(&active_liquid_temps_cold.get()));
     let hot_coffee_chart = create_memo(move |_| seconds_to_minutes(&active_liquid_temps.get()));
     let cold_mug_chart = create_memo(move |_| seconds_to_minutes(&shell_avg_temps_cold.get()));
     let hot_mug_chart = create_memo(move |_| seconds_to_minutes(&shell_avg_temps.get()));
@@ -276,102 +348,58 @@ pub fn HeatEquationPanel() -> impl IntoView {
 
     // Bundled comparison metrics (times in minutes for display)
     let metrics = create_memo(move |_| {
-        compute_comparison(&cold_coffee_chart.get(), &hot_coffee_chart.get(), min_drinkable_c.get())
+        compute_comparison(
+            &cold_coffee_chart.get(),
+            &hot_coffee_chart.get(),
+            min_drinkable_c.get(),
+        )
     });
 
     let current_snapshot = create_memo(move |_| {
-        let data = simulation_data_corrected.get();
+        let data = simulation_data.get();
         let idx = selected_time_idx.get().min(data.len() - 1);
         data[idx].clone()
     });
 
     let initial_snapshot = create_memo(move |_| {
-        let data = simulation_data_corrected.get();
+        let data = simulation_data.get();
         data[0].clone()
     });
 
     let temp_max = create_memo(move |_| {
-        let hi = liquid_temp_c.get().max(shell_temp_c.get()).max(room_temp_c.get());
+        let hi = liquid_temp_c
+            .get()
+            .max(shell_temp_c.get())
+            .max(room_temp_c.get());
         (hi * 1.1 / 10.0).ceil() * 10.0
     });
+    // Lower bound covers the lowest plotted value, which can be below room
+    // once evaporation cools the coffee below room temperature.
     let temp_min = create_memo(move |_| {
-        let lo = liquid_temp_c.get().min(shell_temp_c.get()).min(room_temp_c.get());
-        (lo * 0.9 / 10.0).floor() * 10.0
+        let lowest_snapshot = simulation_data.with(|snaps| {
+            snaps
+                .iter()
+                .flat_map(|s| s.temperatures.iter().copied())
+                .fold(f64::INFINITY, f64::min)
+        });
+        let lo = liquid_temp_c
+            .get()
+            .min(shell_temp_c.get())
+            .min(room_temp_c.get())
+            .min(lowest_snapshot);
+        ((lo - 0.1 * lo.abs()) / 10.0).floor() * 10.0
     });
 
     view! {
         <div class="model-container">
-            <MugControls
-                settings=settings
-                on_reset=Callback::new(move |_| {
-                    let d = StoredSettings::default();
-                    set_selected_time_idx.set(2);
-                    set_num_snapshots.set(100);
-                    set_num_modes.set(50);
-                    set_r_max_mult.set(10.0);
-                    set_use_near_wall.set(false);
-                    set_exposure_pct.set(d.exposure_pct);
-                    set_emissivity.set(d.emissivity);
-                })
-            >
-                <h3>"Heat Equation"</h3>
-
-                <div class="control-group">
-                    <label for="pde-snapshots">"Snapshots: " {move || format!("{}", num_snapshots.get())}</label>
-                    <input
-                        type="range"
-                        id="pde-snapshots"
-                        min="20"
-                        max="200"
-                        step="10"
-                        prop:value=move || num_snapshots.get()
-                        on:input=move |ev| {
-                            if let Ok(v) = event_target_value(&ev).parse::<usize>() {
-                                set_num_snapshots.set(v);
-                            }
-                        }
-                    />
-                    <span class="control-hint">"Time resolution (output frames)"</span>
-                </div>
-
-                <div class="control-group" class:disabled=move || !use_analytical.get()>
-                    <label for="pde-modes">"Series terms: " {move || num_modes.get()}</label>
-                    <input
-                        type="range"
-                        id="pde-modes"
-                        min="1"
-                        max="100"
-                        step="1"
-                        prop:value=move || num_modes.get()
-                        prop:disabled=move || !use_analytical.get()
-                        on:input=move |ev| {
-                            if let Ok(v) = event_target_value(&ev).parse::<usize>() {
-                                set_num_modes.set(v);
-                            }
-                        }
-                    />
-                    <span class="control-hint">"Eigenfunction terms (analytical only)"</span>
-                </div>
-
-                <div class="control-group">
-                    <label for="pde-rmax">"r_max: " {move || format!("{:.1}x r_outer ({:.1} cm)", r_max_mult.get(), r_max_cm.get())}</label>
-                    <input
-                        type="range"
-                        id="pde-rmax"
-                        min="1.5"
-                        max="10"
-                        step="0.5"
-                        prop:value=move || r_max_mult.get()
-                        on:input=move |ev| {
-                            if let Ok(v) = event_target_value(&ev).parse::<f64>() {
-                                set_r_max_mult.set(v);
-                            }
-                        }
-                    />
-                    <span class="control-hint">"Simulation domain extent"</span>
-                </div>
-
-            </MugControls>
+            {with_controls.then(|| view! {
+                <MugControls
+                    settings=settings
+                    on_reset=Callback::new(|_| SimTab::HeatEquation.reset_own_settings())
+                >
+                    <HeatEqExtraControls/>
+                </MugControls>
+            })}
 
             // Right side — charts + stats
             <SimulationResults
@@ -402,7 +430,7 @@ pub fn HeatEquationPanel() -> impl IntoView {
                         convection_coeff=convection_coeff
                         room_temp_c=room_temp_c
                         use_fahrenheit=use_fahrenheit
-                        simulation_data_blended=simulation_data_corrected
+                        snapshots=simulation_data
                         selected_time_idx=selected_time_idx
                         set_selected_time_idx=set_selected_time_idx
                     />

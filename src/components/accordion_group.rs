@@ -3,8 +3,7 @@ use leptos::*;
 #[component]
 pub fn AccordionGroup(
     title: &'static str,
-    #[prop(default = false)]
-    initially_open: bool,
+    #[prop(default = false)] initially_open: bool,
     children: Children,
 ) -> impl IntoView {
     let (is_open, set_is_open) = create_signal(initially_open);

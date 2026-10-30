@@ -3,15 +3,25 @@ use leptos_router::use_query_map;
 
 /// Create panel-local solver signals backed by a shared `RwSignal<bool>`.
 ///
-/// The `?solver=numerical` query param overrides the stored value on first load.
+/// A `?solver=analytical` or `?solver=numerical` query param overrides the
+/// stored value on first load.
 /// Returns `(use_analytical, set_use_analytical, sim_ready, set_sim_ready)`.
-pub fn create_solver_signals(shared: RwSignal<bool>) -> (ReadSignal<bool>, WriteSignal<bool>, ReadSignal<bool>, WriteSignal<bool>) {
+pub fn create_solver_signals(
+    shared: RwSignal<bool>,
+) -> (
+    ReadSignal<bool>,
+    WriteSignal<bool>,
+    ReadSignal<bool>,
+    WriteSignal<bool>,
+) {
     let query = use_query_map();
-    let has_numerical_override = query.with_untracked(|q| {
-        q.get("solver").map(|v| v == "numerical").unwrap_or(false)
+    let solver_override = query.with_untracked(|q| match q.get("solver").map(String::as_str) {
+        Some("analytical") => Some(true),
+        Some("numerical") => Some(false),
+        _ => None,
     });
-    if has_numerical_override {
-        shared.set(false);
+    if let Some(analytical) = solver_override {
+        shared.set(analytical);
     }
     let (use_analytical, set_use_analytical) = shared.split();
     let (sim_ready, set_sim_ready) = create_signal(false);

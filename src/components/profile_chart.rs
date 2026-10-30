@@ -1,4 +1,5 @@
-use crate::physics::{HeatSnapshot, K_AIR};
+use crate::physics::constants::K_AIR;
+use crate::physics::HeatSnapshot;
 use crate::storage::c_to_f;
 use leptos::*;
 use wasm_bindgen::JsCast;
@@ -11,13 +12,19 @@ pub(crate) const PROFILE_H: f64 = 180.0;
 
 /// Look up the temperature at a given radius from a snapshot, applying
 /// boundary-layer exponential decay for points beyond the outer surface.
-fn temperature_at_radius(snap: &HeatSnapshot, r_m: f64, r_outer_m: f64, h_conv: f64, t_room: f64) -> f64 {
+fn temperature_at_radius(
+    snap: &HeatSnapshot,
+    r_m: f64,
+    r_outer_m: f64,
+    h_conv: f64,
+    t_room: f64,
+) -> f64 {
     if r_m <= r_outer_m {
         // Inside the mug: find nearest grid point
-        snap.radii.iter().zip(snap.temperatures.iter())
-            .min_by(|(r1, _), (r2, _)| {
-                (*r1 - r_m).abs().total_cmp(&(*r2 - r_m).abs())
-            })
+        snap.radii
+            .iter()
+            .zip(snap.temperatures.iter())
+            .min_by(|(r1, _), (r2, _)| (*r1 - r_m).abs().total_cmp(&(*r2 - r_m).abs()))
             .map(|(_, &t)| t)
             .unwrap_or(t_room)
     } else {
@@ -26,7 +33,8 @@ fn temperature_at_radius(snap: &HeatSnapshot, r_m: f64, r_outer_m: f64, h_conv: 
         for i in 1..snap.radii.len() {
             if snap.radii[i - 1] <= r_outer_m && snap.radii[i] >= r_outer_m {
                 let frac = (r_outer_m - snap.radii[i - 1]) / (snap.radii[i] - snap.radii[i - 1]);
-                t_s = snap.temperatures[i - 1] + frac * (snap.temperatures[i] - snap.temperatures[i - 1]);
+                t_s = snap.temperatures[i - 1]
+                    + frac * (snap.temperatures[i] - snap.temperatures[i - 1]);
                 break;
             }
         }
@@ -103,7 +111,7 @@ pub fn ProfileChart(
     convection_coeff: RwSignal<f64>,
     room_temp_c: RwSignal<f64>,
     use_fahrenheit: RwSignal<bool>,
-    simulation_data_blended: Memo<Vec<HeatSnapshot>>,
+    snapshots: Memo<Vec<HeatSnapshot>>,
     selected_time_idx: ReadSignal<usize>,
     set_selected_time_idx: WriteSignal<usize>,
 ) -> impl IntoView {
@@ -126,7 +134,7 @@ pub fn ProfileChart(
                 <input
                     type="range"
                     min="0"
-                    max=move || simulation_data_blended.get().len().saturating_sub(1)
+                    max=move || snapshots.get().len().saturating_sub(1)
                     step="1"
                     prop:value=move || selected_time_idx.get()
                     on:input=move |ev| {
@@ -167,7 +175,7 @@ pub fn ProfileChart(
                     y="20"
                     width=move || {
                         let inner_r = inner_radius_cm.get();
-                        (inner_r / chart_max_r_cm.get() * PROFILE_W) as f64
+                        inner_r / chart_max_r_cm.get() * PROFILE_W
                     }
                     height="180"
                     fill="var(--color-cold)"
@@ -184,7 +192,7 @@ pub fn ProfileChart(
                     width=move || {
                         let inner_r = inner_radius_cm.get();
                         let outer_r = outer_radius_cm.get();
-                        ((outer_r - inner_r) / chart_max_r_cm.get() * PROFILE_W) as f64
+                        (outer_r - inner_r) / chart_max_r_cm.get() * PROFILE_W
                     }
                     height="180"
                     fill="var(--color-secondary)"

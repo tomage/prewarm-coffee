@@ -15,13 +15,6 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
                 <A href="/theory">"< Back to Theory"</A>
             </nav>
 
-            <p class="wip-note">
-                "This page is a work in progress. There may be discrepancies between "
-                "the explanations below and what the simulation actually computes, as well "
-                "as outright errors. If you spot something, please "
-                <a href="https://github.com/tomage/prewarm-coffee/issues" target="_blank" rel="noopener">"open an issue"</a>"."
-            </p>
-
             <section class="physics-detail">
                 <h2>"The Problem"</h2>
                 <p>
@@ -36,7 +29,7 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
                 <ul>
                     <li><strong>"Region I: Coffee"</strong>" (water) \u{2014} high thermal mass, moderate conductivity"</li>
                     <li><strong>"Region II: Mug"</strong>" (ceramic/glass) \u{2014} moderate conductivity, provides insulation"</li>
-                    <li><strong>"Region III: Air"</strong>" \u{2014} very low conductivity, acts as thermal barrier. Heat conduction through the air layer is modeled, and convective loss at the outer surface is captured via a Robin boundary condition (Newton\u{2019}s law of cooling)."</li>
+                    <li><strong>"Region III: Air"</strong>" \u{2014} very low conductivity, acts as thermal barrier. Heat conduction through the air layer is modeled, and convective and radiative loss at the mug\u{2019}s outer surface is a surface loss term there (Newton\u{2019}s law of cooling)."</li>
                 </ul>
             </section>
 
@@ -70,24 +63,41 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
                 </div>
 
                 <div class="heat-flow">
-                    <h3>"Interfaces (r = r\u{1d62} and r = r\u{2092}): Continuity"</h3>
-                    <p>"At each material interface, both temperature and heat flux must be continuous:"</p>
+                    <h3>"Interfaces (r = r\u{1d62} and r = r\u{2092}): Continuity and Flux Balance"</h3>
+                    <p>"At each material interface the temperature is continuous:"</p>
                     <div class="formula">
-                        "\\[T_{\\text{left}} = T_{\\text{right}}, \\quad k_{\\text{left}} \\frac{\\partial T}{\\partial r} = k_{\\text{right}} \\frac{\\partial T}{\\partial r}\\]"
+                        "\\[T_{\\text{left}} = T_{\\text{right}}\\]"
                     </div>
-                    <p>"The flux condition accounts for different thermal conductivities on each side."</p>
+                    <p>
+                        "The heat flux arriving from the inside either crosses into the next region or "
+                        "leaves through the interface\u{2019}s surface loss:"
+                    </p>
+                    <div class="formula">
+                        "\\[-k_1 \\frac{\\partial T}{\\partial r}\\bigg|_{r_i} = -k_2 \\frac{\\partial T}{\\partial r}\\bigg|_{r_i} + q_{\\text{top}}, \\qquad -k_2 \\frac{\\partial T}{\\partial r}\\bigg|_{r_o} = -k_3 \\frac{\\partial T}{\\partial r}\\bigg|_{r_o} + h_{\\text{eff}} \\left(T - T_{\\text{room}}\\right)\\]"
+                    </div>
+                    <p>
+                        "At " "\\(r_i\\)" ", " "\\(q_{\\text{top}}\\)" " is the loss through the lid "
+                        "opening (convection, radiation and evaporation from the open coffee surface), "
+                        "spread over the sphere\u{2019}s inner surface. At " "\\(r_o\\)" ", "
+                        "\\(h_{\\text{eff}} = h_{\\text{conv}} + 4\\varepsilon\\sigma T_m^3\\)" " is "
+                        "convection plus linearized radiation from the mug\u{2019}s outer surface. "
+                        "With no lid opening and no surface loss, both conditions reduce to plain flux "
+                        "continuity, " "\\(k_{\\text{left}}\\, \\partial T/\\partial r = k_{\\text{right}}\\, \\partial T/\\partial r\\)" "."
+                    </p>
                 </div>
 
                 <div class="heat-flow">
-                    <h3>"Outer Boundary (r = r"<sub>"max"</sub>"): Robin Condition"</h3>
+                    <h3>"Outer Boundary (r = r"<sub>"max"</sub>"): Room Temperature"</h3>
                     <div class="formula">
-                        "\\[-k_3 \\frac{\\partial T}{\\partial r}\\bigg|_{r_{\\max}} = h_{\\text{eff}} \\left(T - T_{\\text{room}}\\right)\\]"
+                        "\\[T(r_{\\max}, t) = T_{\\text{room}}\\]"
                     </div>
                     <p>
-                        "The simulation uses a finite domain. At the outer boundary, a Robin condition "
-                        "models convective and radiative loss to the environment. With "
-                        "\\(r_{\\max} \\geq 10 \\times r_{\\text{outer}}\\)" ", "
-                        "this closely approximates the true infinite-domain behavior."
+                        "The simulation uses a finite domain. Both solvers hold the air at "
+                        "\\(r_{\\max}\\)" " at room temperature (a Dirichlet condition); the losses to "
+                        "the room happen at the mug\u{2019}s outer surface, above. "
+                        "The default " "\\(r_{\\max} = 10 \\times r_{\\text{outer}}\\)" " "
+                        "closely approximates the true infinite-domain behavior; a smaller "
+                        "\\(r_{\\max}\\)" " holds room-temperature air closer to the mug and cools it faster."
                     </p>
                 </div>
             </section>
@@ -146,11 +156,18 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
             </section>
 
             <section class="physics-detail">
-                <h2>"Numerical Solution: Finite Differences"</h2>
+                <h2>"Numerical Solution: Finite Volumes"</h2>
                 <p>
                     "The most practical approach is to discretize both space and time. We divide "
-                    "the radial domain into grid points on a finite domain " "\\([0, r_{\\max}]\\)" " and "
-                    "step forward in time using the " <strong>"Crank\u{2013}Nicolson"</strong> " method\u{2014}"
+                    "the radial domain " "\\([0, r_{\\max}]\\)" " into grid points, fine near the "
+                    "interfaces and coarse in the bulk. Each grid point owns a thin spherical "
+                    "shell around it (its " <strong>"control volume"</strong> "), and the solver tracks "
+                    "the heat flowing across the faces between neighbouring control volumes. "
+                    "This " <strong>"finite-volume"</strong> " form conserves energy exactly: heat that "
+                    "leaves one control volume enters the next."
+                </p>
+                <p>
+                    "Time stepping uses the " <strong>"Crank\u{2013}Nicolson"</strong> " method\u{2014}"
                     "an implicit scheme that averages the spatial operator at the current and next time level:"
                 </p>
                 <div class="formula">
@@ -159,35 +176,49 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
                 <p>
                     "where " "\\(L\\)" " is the discretized diffusion operator in conservative form "
                     "\\(\\frac{1}{\\rho c \\, r^2} \\frac{\\partial}{\\partial r}\\!\\left(r^2 k \\frac{\\partial T}{\\partial r}\\right)\\)" " "
-                    "and " "\\(\\mathbf{s}\\)" " includes convection and radiation source terms. "
+                    "and " "\\(\\mathbf{s}\\)" " holds the surface-loss source terms. "
                     "At each time step, this tridiagonal linear system is solved efficiently using the Thomas algorithm."
                 </p>
 
-                <h3>"Unconditional Stability"</h3>
+                <h3>"Stability and Start-up"</h3>
                 <p>
                     "Unlike the explicit (forward Euler) method, which requires "
                     "\\(\\Delta t < \\Delta r^2/(2\\alpha)\\)" ", "
                     "Crank\u{2013}Nicolson is " <strong>"unconditionally stable"</strong>
-                    "\u{2014}there is no CFL constraint on the time step. "
-                    "This allows the solver to use ~500 time steps regardless of grid resolution, "
-                    "keeping computation fast even with fine spatial grids."
+                    "\u{2014}there is no CFL constraint on the time step. It does let very stiff modes "
+                    "flip sign from one step to the next instead of decaying, which shows up as ringing "
+                    "at the mug wall right after the start. The solver therefore takes its first 4 steps "
+                    "with backward Euler (" "\\(\\left(I - \\Delta t\\, L\\right) \\mathbf{T}^{n+1} = \\mathbf{T}^n + \\Delta t\\, \\mathbf{s}\\)" "), "
+                    "which damps those modes, and then switches to Crank\u{2013}Nicolson "
+                    "(a " <strong>"Rannacher start-up"</strong> ")."
+                </p>
+                <p>
+                    "The time step is " "\\(\\Delta t = \\min(t_{\\text{end}}/500,\\ 0.5\\,\\text{s})\\)" ", "
+                    "and never longer than the interval between recorded snapshots. For any run longer "
+                    "than about 4 minutes that is 0.5 s: 3,600 steps for 30 minutes, 14,400 for 2 hours."
                 </p>
 
                 <h3>"Interface Handling"</h3>
                 <p>
                     "At material boundaries, " "\\(\\alpha\\)" " and " "\\(k\\)" " change abruptly. "
-                    "The solver uses the " <strong>"harmonic mean"</strong> " of conductivities at half-points "
-                    "\\(k_{i+1/2} = 2 k_i k_{i+1} / (k_i + k_{i+1})\\)" " to properly enforce "
-                    "flux continuity " "\\(k_1 \\partial T/\\partial r = k_2 \\partial T/\\partial r\\)" " at interfaces."
+                    "A grid point sits exactly on each interface, so every grid segment lies in one "
+                    "material and the flux across it uses that material\u{2019}s " "\\(k\\)" ". "
+                    "The interface point\u{2019}s control volume is part one material and part the other, "
+                    "and its heat capacity is the sum of the two parts. The heat arriving through one "
+                    "face and leaving through the other is balanced in that shared volume, which enforces "
+                    "the flux balance at " "\\(r_i\\)" " and " "\\(r_o\\)" " without approximating "
+                    "\\(k\\)" " across the jump."
                 </p>
 
                 <h3>"Boundary Conditions"</h3>
                 <p>
-                    "The simulation uses a finite domain with a Dirichlet condition "
-                    "\\(T(r_{\\max}) = T_{\\text{room}}\\)" " at the outer boundary. "
-                    "Convection and linearized radiation are applied as Robin conditions "
-                    "at the shell outer surface. With " "\\(r_{\\max} \\geq 10 \\times r_{\\text{outer}}\\)" ", "
-                    "the finite domain has negligible effect on coffee/mug temperatures."
+                    "The grid point at " "\\(r_{\\max}\\)" " is held at " "\\(T_{\\text{room}}\\)" ". "
+                    "At the shell\u{2019}s outer surface, convection and radiation (linearized at the "
+                    "current surface temperature, re-done every step) act on the interface point. At the "
+                    "coffee\u{2019}s surface " "\\(r_i\\)" ", the open-top loss is linearized every step "
+                    "as the tangent " "\\(h\\,(T - T_{\\text{ref}})\\)" " at the current temperature. "
+                    "Evaporation keeps going at room temperature, so " "\\(T_{\\text{ref}}\\)" " is a little "
+                    "below room and the coffee can settle slightly below room temperature."
                 </p>
 
                 <div class="note">
@@ -199,11 +230,12 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
 
                 <div class="note">
                     <strong>"Why start with numerical? "</strong>
-                    "Finite differences handle material discontinuities naturally, "
+                    "Finite volumes handle material discontinuities naturally, "
                     "and adding nonlinear effects like radiation, evaporation, and convective "
                     "surface losses is straightforward. "
                     "The analytical eigenfunction expansion (below) provides exact results for "
-                    "the linear problem but cannot handle these nonlinearities directly\u{2014}"
+                    "the linear problem but cannot handle these nonlinearities directly; it "
+                    "linearizes them afresh for each of ten time segments (see below)\u{2014}"
                     "both approaches are available in this project."
                 </div>
             </section>
@@ -246,22 +278,24 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
 
                 <h3>"Single Region: Clean Eigenvalues"</h3>
                 <p>
-                    "For a single homogeneous sphere, the eigenvalues are simply "
+                    "For a single homogeneous sphere whose surface is held at "
+                    "\\(T_{\\text{room}}\\)" ", the eigenvalues are simply "
                     "\\(\\lambda_n = n\\pi / R\\)" " and the full solution is:"
                 </p>
                 <div class="formula">
                     "\\[T(r,t) = T_{\\text{room}} + \\sum_{n=1}^{\\infty} A_n \\frac{\\sin(n\\pi r/R)}{n\\pi r/R} \\, e^{-\\alpha (n\\pi/R)^2 t}\\]"
                 </div>
                 <p>
-                    "The coefficients " "\\(A_n\\)" " are determined by the initial condition "
-                    "\\(T(r,0) = f(r)\\)" " using orthogonality of the eigenfunctions:"
+                    "The coefficients " "\\(A_n\\)" " are determined by the initial excess over room, "
+                    "\\(f(r) = T(r,0) - T_{\\text{room}}\\)" ", using orthogonality of the eigenfunctions "
+                    "(with weight " "\\(r^2\\)" "):"
                 </p>
                 <div class="formula">
-                    "\\[A_n = \\frac{2}{R} \\int_0^R r \\, f(r) \\, \\sin\\!\\left(\\frac{n\\pi r}{R}\\right) dr\\]"
+                    "\\[A_n = \\frac{2 n\\pi}{R^2} \\int_0^R r \\, f(r) \\, \\sin\\!\\left(\\frac{n\\pi r}{R}\\right) dr\\]"
                 </div>
                 <p>
                     "For a uniform initial temperature " "\\(T(r,0) = T_0\\)" ", this gives "
-                    "\\(A_n = 2 T_0 (-1)^{n+1} / (n\\pi)\\)" "."
+                    "\\(A_n = 2 (T_0 - T_{\\text{room}}) (-1)^{n+1}\\)" "."
                 </p>
 
                 <h3>"Three Regions: Transcendental Eigenvalues"</h3>
@@ -295,14 +329,14 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
                     "On a finite domain, region III uses standing waves (sin/cos) rather than "
                     "exponential decay. The coefficients "
                     "\\(g_d = \\cos(\\beta_3 r_{\\max})\\)" " and "
-                    "\\(g_n = -\\sin(\\beta_3 r_{\\max})\\)" " enforce the boundary condition at "
+                    "\\(g_n = -\\sin(\\beta_3 r_{\\max})\\)" " make " "\\(T_3 = T_{\\text{room}}\\)" " at "
                     "\\(r_{\\max}\\)" ". (On an infinite domain, the spectrum becomes continuous and "
                     "\\(T_3\\)" " would involve an integral transform rather than a discrete sum.)"
                 </p>
                 <p>
                     "The eigenvalues are no longer simple multiples of " "\\(\\pi\\)" ". Instead, "
-                    "matching temperature and flux continuity at each interface gives four conditions "
-                    "relating " "\\(A_n, B_n, C_n, D_n\\)" ". For non-trivial solutions, the 4\u{00D7}4 "
+                    "matching temperature continuity and the flux balance at each interface gives four "
+                    "conditions relating " "\\(A_n, B_n, C_n, D_n\\)" ". For non-trivial solutions, the 4\u{00D7}4 "
                     "determinant must vanish:"
                 </p>
                 <div class="formula">
@@ -312,6 +346,26 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
                     "This is a " <strong>"transcendental equation"</strong> "\u{2014}it cannot be solved "
                     "in closed form. The eigenvalues must be found numerically (bisection, Newton's method), "
                     "and the series must be truncated at a finite number of terms."
+                </p>
+                <p>
+                    "An eigenfunction expansion needs every coefficient to be constant, but the surface "
+                    "losses change as the coffee cools. The analytical solver therefore cuts the run into "
+                    <strong>"ten equal time segments"</strong> " and holds the losses constant within each. "
+                    "At " "\\(r_i\\)" ", the open-top loss becomes "
+                    "\\(q_{\\text{top}} = h_{\\text{inner}} (T - T_{\\text{room}})\\)" ", with "
+                    "\\(h_{\\text{inner}}\\)" " the open share of the sphere times the loss at the coffee\u{2019}s "
+                    "average temperature divided by its excess over room (taken at 5 K above room if the "
+                    "coffee is closer to room than that). At " "\\(r_o\\)" ", " "\\(h_{\\text{eff}}\\)"
+                    " takes the radiation term at the mug\u{2019}s outer-surface temperature."
+                </p>
+                <p>
+                    "Each segment uses the " <strong>"midpoint rule"</strong> ": it is solved once with the "
+                    "losses taken at the segment\u{2019}s starting temperatures, to predict where it ends, and "
+                    "solved again with the losses taken halfway between start and predicted end. Each "
+                    "segment is exact for its constant coefficients. The next one starts from its final "
+                    "temperature profile, re-expanded in the new segment\u{2019}s eigenfunctions by projecting "
+                    "the profile onto them (Simpson\u{2019}s rule in each region). The numerical solver "
+                    "re-linearizes every step."
                 </p>
 
                 <div class="note">
@@ -387,16 +441,56 @@ pub fn TheoryHeatEquationPage() -> impl IntoView {
             </section>
 
             <section class="physics-detail">
+                <h2>"Assumptions"</h2>
+                <ul>
+                    <li>"The mug is a sphere: the coffee is a sphere of the chosen volume, inside a "
+                        "spherical shell of the chosen wall thickness, surrounded by air."</li>
+                    <li>"Still air with a constant convection coefficient " "\\(h_{\\text{conv}}\\)" " at the "
+                        "mug\u{2019}s outer surface and the open coffee surface."</li>
+                    <li>"Water\u{2019}s effective conductivity is 6.0 W/(m\u{00B7}K), about 10\u{00D7} "
+                        "molecular, standing in for the convective mixing inside the coffee."</li>
+                    <li>"Radiation is linearized: " "\\(h_{\\text{rad}} = 4\\varepsilon\\sigma T_m^3\\)" ". The "
+                        "numerical solver re-linearizes every step at the current surface temperature; the "
+                        "analytical solver re-linearizes once per segment, at the outer surface\u{2019}s "
+                        "midpoint temperature for that segment."</li>
+                    <li>"Evaporation follows the Lewis analogy \u{00D7} 2.5 for the rising plume, at 50% "
+                        "relative humidity. It continues at room temperature, so in the numerical solver "
+                        "coffee can end a few degrees below room. The 2.5 factor scales evaporation only, not "
+                        "convection, which puts that limit slightly below the wet-bulb temperature."</li>
+                    <li>"A lid is a perfect insulator with no heat capacity: no heat leaves through the covered "
+                        "part of the coffee\u{2019}s surface."</li>
+                    <li>"At 100% exposure (no lid), the open area is a typical mug\u{2019}s top, mapped to "
+                        "19.1% of the sphere\u{2019}s inner surface; exposure scales it linearly. The open-top "
+                        "losses are spread evenly over the inner surface, because the model is radially symmetric."</li>
+                    <li>"The analytical solver linearizes the open-top losses per segment, at the coffee\u{2019}s "
+                        "average temperature for that segment, but at least 5 K above room. It can therefore "
+                        "only cool toward room temperature, never below it."</li>
+                    <li>"The analytical solver takes the open-top loss at the coffee\u{2019}s average "
+                        "temperature; the numerical one at the open surface, which is cooler. So the analytical "
+                        "coffee runs slightly cold: its temperature differs from the numerical one\u{2019}s by "
+                        "up to about 1.8 \u{00B0}C with no lid (180 ml, " "\\(h_{\\text{conv}}\\)" " = 20) and "
+                        "by about 0.2 \u{00B0}C or less with the lid at most 20% open. For a ceramic mug at the "
+                        "default 20% opening (180 or 500 ml; 2, 5 or 8 mm walls) the two agree on what "
+                        "preheating buys to within 0.1 minute of drinkable time and 0.2 \u{00B0}C, but the "
+                        "analytical coffee drops below drinkable 0.2\u{2013}0.4 minutes early (larger mugs "
+                        "more), in both the cold and the preheated mug. The gap widens with the lid half or "
+                        "fully open, where the crossings land about 0.4 minutes early on average and up to "
+                        "1 minute, and for stainless steel at low convection, where the analytical solver "
+                        "credits preheating with up to 0.5 minute more than the numerical one."</li>
+                    <li>"The air domain is finite: air at " "\\(r_{\\max}\\)" " (default 10\u{00D7} the mug\u{2019}s "
+                        "outer radius) is held at room temperature."</li>
+                    <li>"Constant material properties, independent of temperature; constant room temperature."</li>
+                </ul>
+            </section>
+
+            <section class="physics-detail">
                 <h2>"Model Limitations"</h2>
                 <p>"Compared to the lumped model, the PDE approach removes the uniform-temperature "
-                   "assumption but introduces others:"</p>
+                   "assumption but has limits of its own:"</p>
                 <ul>
-                    <li>"Spherical geometry (real mugs are cylindrical)"</li>
-                    <li>"Radial symmetry only (no vertical convection currents)"</li>
-                    <li>"Natural convection in the liquid is approximated via an effective conductivity (10\u{00D7} molecular), not resolved with fluid dynamics"</li>
-                    <li>"Pure conduction within the air region (convective loss is modeled at the outer boundary, but not internal air circulation)"</li>
-                    <li>"Evaporative cooling is included in the numerical solver (controlled by the exposure slider) but handled approximately in the analytical solver via a separate exposed-sphere model"</li>
-                    <li>"Finite simulation domain (not truly infinite)\u{2014}mitigated by using " "\\(r_{\\max} \\geq 10 \\times r_{\\text{outer}}\\)"</li>
+                    <li>"Radial symmetry only (no vertical convection currents, no distinct top surface)"</li>
+                    <li>"Natural convection in the liquid is approximated via an effective conductivity, not resolved with fluid dynamics"</li>
+                    <li>"Pure conduction within the air region (convective loss is modeled at the mug\u{2019}s outer surface, but not internal air circulation)"</li>
                 </ul>
             </section>
 

@@ -197,6 +197,19 @@ section h2 {
   color: var(--color-hot);
 }
 
+.conclusion p {
+  margin-bottom: 1rem;
+}
+
+.conclusion strong {
+  color: var(--color-hot);
+}
+
+.conclusion-note {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
 /* Interactive Model */
 .model-container {
   display: grid;
@@ -831,21 +844,6 @@ footer .analytics-note {
   display: none;
 }
 
-/* Simulator overlay — hidden by default, shown on mobile only */
-.simulator-overlay {
-  display: none;
-}
-
-/* Mobile entry card — hidden by default, shown on mobile only */
-.mobile-sim-entry {
-  display: none;
-}
-
-/* Desktop simulator wrapper */
-.desktop-sim {
-  display: block;
-}
-
 @media (max-width: 700px) {
   .mobile-summary {
     display: block;
@@ -889,9 +887,8 @@ footer .analytics-note {
     cursor: pointer;
   }
 
-  /* Mobile simulator entry card */
+  /* Mobile simulator entry card (App mounts it only on small screens) */
   .mobile-sim-entry {
-    display: block;
     text-align: center;
     padding: 1.5rem 1rem;
     background: var(--color-surface);
@@ -921,11 +918,6 @@ footer .analytics-note {
     opacity: 0.8;
   }
 
-  /* Hide inline desktop simulator on mobile */
-  .desktop-sim {
-    display: none;
-  }
-
   /* Fullscreen simulator overlay */
   .simulator-overlay {
     display: flex;
@@ -937,6 +929,11 @@ footer .analytics-note {
     overflow: hidden;
   }
 
+  /* The dialog takes focus on open; it is not itself a control. */
+  .simulator-overlay:focus {
+    outline: none;
+  }
+
   .simulator-overlay .overlay-header {
     display: flex;
     align-items: center;
@@ -945,6 +942,13 @@ footer .analytics-note {
     background: var(--color-surface);
     border-bottom: 1px solid var(--color-border);
     flex-shrink: 0;
+  }
+
+  .simulator-overlay .overlay-title {
+    margin: 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--color-text);
   }
 
   .simulator-overlay .overlay-tabs {
@@ -1001,11 +1005,6 @@ footer .analytics-note {
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     padding-bottom: 1rem;
-  }
-
-  /* Inside overlay: hide panel controls (accordion replaces them) */
-  .simulator-overlay .overlay-chart .controls {
-    display: none;
   }
 
   /* Inside overlay: override model-container grid to block layout */

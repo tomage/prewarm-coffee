@@ -1,8 +1,9 @@
-use crate::components::{MobileSummaryBar, MugControls, SimulationResults};
-use crate::components::profile_chart::{PROFILE_X, PROFILE_W, PROFILE_Y_BOTTOM, PROFILE_H};
+use crate::components::cooling_chart::lowest_plotted;
+use crate::components::profile_chart::{PROFILE_H, PROFILE_W, PROFILE_X, PROFILE_Y_BOTTOM};
 use crate::components::solver_toggle::create_solver_signals;
+use crate::components::{MobileSummaryBar, MugControls, SimulationResults};
 use crate::physics::{
-    compute_comparison, simulate_lumped_analytical, simulate_lumped_numerical,
+    compute_comparison, series_up_to, simulate_lumped_analytical, simulate_lumped_numerical,
     CoolingDataPoint, MugParameters, MAX_SIMULATION_MINUTES,
 };
 use crate::storage::{c_to_f, SharedSettings};
@@ -19,17 +20,25 @@ struct TimedResult {
 fn timed_numerical(params: &MugParameters, duration: usize) -> TimedResult {
     let start = js_sys::Date::now();
     let data = simulate_lumped_numerical(params, duration);
-    TimedResult { data, elapsed_ms: js_sys::Date::now() - start }
+    TimedResult {
+        data,
+        elapsed_ms: js_sys::Date::now() - start,
+    }
 }
 
 fn timed_analytical(params: &MugParameters, duration: usize) -> TimedResult {
     let start = js_sys::Date::now();
     let data = simulate_lumped_analytical(params, duration);
-    TimedResult { data, elapsed_ms: js_sys::Date::now() - start }
+    TimedResult {
+        data,
+        elapsed_ms: js_sys::Date::now() - start,
+    }
 }
 
+/// `with_controls = false` leaves the controls to the caller (the overlay
+/// renders them outside the panel).
 #[component]
-pub fn LumpedPanel() -> impl IntoView {
+pub fn LumpedPanel(#[prop(default = true)] with_controls: bool) -> impl IntoView {
     // Use shared settings singleton — same RwSignals across all routes
     let settings = SharedSettings::instance();
     let volume_ml = settings.volume_ml;
@@ -41,7 +50,8 @@ pub fn LumpedPanel() -> impl IntoView {
     let duration_minutes = settings.duration_minutes;
     let preheat_temp_c = settings.preheat_temp_c;
 
-    let (use_analytical, set_use_analytical, sim_ready, set_sim_ready) = create_solver_signals(settings.use_analytical_lumped);
+    let (use_analytical, set_use_analytical, sim_ready, set_sim_ready) =
+        create_solver_signals(settings.use_analytical_lumped);
 
     let make_params = move |preheated: bool| settings.make_mug_params(preheated);
 
@@ -78,9 +88,16 @@ pub fn LumpedPanel() -> impl IntoView {
     let hot_mug = create_memo(move |_| CoolingDataPoint::mug_series(&timed_hot.get().data));
     let temp_top = create_memo(move |_| 100.0_f64);
 
-    // Bundled comparison metrics
+    // Bundled comparison metrics over the displayed duration. The run is
+    // simulated for MAX_SIMULATION_MINUTES so changing the duration needs no
+    // re-run, but crossings and averages must describe what the chart shows.
     let metrics = create_memo(move |_| {
-        compute_comparison(&cold_coffee.get(), &hot_coffee.get(), min_drinkable_c.get())
+        let duration = duration_minutes.get() as f64;
+        compute_comparison(
+            &series_up_to(&cold_coffee.get(), duration),
+            &series_up_to(&hot_coffee.get(), duration),
+            min_drinkable_c.get(),
+        )
     });
 
     // Crossing times for MobileSummaryBar
@@ -97,25 +114,36 @@ pub fn LumpedPanel() -> impl IntoView {
     });
 
     // Derived: outer radius = inner + shell thickness
-    let outer_radius_cm = create_memo(move |_| {
-        inner_radius_cm.get() + wall_thickness_mm.get() / 10.0
-    });
+    let outer_radius_cm =
+        create_memo(move |_| inner_radius_cm.get() + wall_thickness_mm.get() / 10.0);
 
     let chart_max_r_cm = 10.0_f64;
 
     // Y-axis range
     let temp_max = create_memo(move |_| {
-        let hi = coffee_temp_c.get().max(preheat_temp_c.get()).max(room_temp_c.get());
+        let hi = coffee_temp_c
+            .get()
+            .max(preheat_temp_c.get())
+            .max(room_temp_c.get());
         (hi * 1.1 / 10.0).ceil() * 10.0
     });
+    // Lower bound covers the lowest plotted value, which can be below room
+    // once evaporation cools the coffee below room temperature.
     let temp_min = create_memo(move |_| {
-        let lo = coffee_temp_c.get().min(preheat_temp_c.get()).min(room_temp_c.get());
-        (lo * 0.9 / 10.0).floor() * 10.0
+        let lo = coffee_temp_c
+            .get()
+            .min(preheat_temp_c.get())
+            .min(room_temp_c.get())
+            .min(lowest_plotted(
+                &[&hot_coffee.get(), &hot_mug.get()],
+                duration_minutes.get() as f64,
+            ));
+        ((lo - 0.1 * lo.abs()) / 10.0).floor() * 10.0
     });
 
     view! {
         <div class="model-container">
-            <MugControls settings=settings />
+            {with_controls.then(|| view! { <MugControls settings=settings/> })}
             <SimulationResults
                 cold_coffee=cold_coffee
                 hot_coffee=hot_coffee
@@ -340,13 +368,14 @@ pub fn LumpedPanel() -> impl IntoView {
                                 <span class="stat-label">"Room temp"</span>
                             </div>
                         </div>
-                    }.into()
+                    }
                 })
             />
         </div>
         <MobileSummaryBar
             time_cold=crossing_time_cold
             time_hot=crossing_time_hot
+            duration_minutes=duration_minutes.read_only()
         />
     }
 }

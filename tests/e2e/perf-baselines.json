@@ -1,23 +1,26 @@
 {
   "/": {
-    "median_ms": 21
+    "median_ms": 22
   },
   "/about": {
-    "median_ms": 8
+    "median_ms": 10
   },
   "/theory": {
-    "median_ms": 8
+    "median_ms": 9
   },
   "/theory/heat-equation": {
-    "median_ms": 169
+    "median_ms": 38
+  },
+  "/theory/heat-equation?solver=analytical": {
+    "median_ms": 95
   },
   "/theory/heat-equation?solver=numerical": {
-    "median_ms": 108
+    "median_ms": 39
   },
   "/theory/lumped": {
     "median_ms": 23
   },
   "/theory/lumped?solver=numerical": {
-    "median_ms": 32
+    "median_ms": 25
   }
 }

@@ -20,21 +20,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+      # rustup on the runner reads rust-toolchain.toml, so CI and local runs
+      # share one pinned toolchain (channel, components, wasm target).
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install
 
-      - name: Run tests
-        run: cargo test -- --skip perf_
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Install Trunk
+      - name: Install Trunk and cargo-llvm-cov
         uses: taiki-e/install-action@v2
         with:
-          tool: trunk
+          tool: trunk@0.21.14,cargo-llvm-cov
+
+      # Same gate as local `make test-ci`: fmt, clippy, unit tests with the
+      # coverage floor. Runs before the build so a red gate ships no artifact.
+      - name: Lint and test
+        run: make test-ci
 
       - name: Build
-        run: trunk build --release --public-url /
+        run: trunk build --release --locked --public-url /
 
       - name: SPA fallback for GitHub Pages
         run: cp dist/index.html dist/404.html

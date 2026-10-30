@@ -30,12 +30,9 @@ pub fn SimulationResults(
     compute_time_ms: Signal<f64>,
     sim_ready: Signal<bool>,
     // Optional
-    #[prop(default = f64::MAX)]
-    max_sim_minutes: f64,
-    #[prop(optional)]
-    children: Option<Children>,
-    #[prop(optional)]
-    footer: Option<ChildrenFn>,
+    #[prop(default = f64::MAX)] max_sim_minutes: f64,
+    #[prop(optional)] children: Option<Children>,
+    #[prop(optional)] footer: Option<ChildrenFn>,
 ) -> impl IntoView {
     // Derive crossing times from metrics for CoolingChart
     let crossing_cold = create_memo(move |_| metrics.get().crossing_time_cold);

@@ -54,7 +54,16 @@ pub fn AboutPage() -> impl IntoView {
             <section class="about-section">
                 <h2>"Version History"</h2>
                 <dl class="version-history">
-                    <dt>"v4 \u{2014} Current " <span class="version-date">"March 1, 2026"</span></dt>
+                    <dt>"v5 \u{2014} Current " <span class="version-date">"October 29, 2026"</span></dt>
+                    <dd>
+                        <ul>
+                            <li>"Physics corrections across all four solvers after a full review: energy conservation, lid-opening losses, evaporation and mug conductance"</li>
+                            <li>"The analytical heat-equation solver follows the coffee as it cools, and now agrees with the numerical one"</li>
+                            <li>"Home states the conclusion: about 3\u{00BD} more drinkable minutes and 5\u{2013}8 \u{00B0}C warmer in a preheated ceramic mug"</li>
+                            <li>"Smoother sliders, settings that sync between tabs and survive bad data, and an accessible mobile simulator"</li>
+                        </ul>
+                    </dd>
+                    <dt>"v4 " <span class="version-date">"March 1, 2026"</span></dt>
                     <dd>
                         <ul>
                             <li>"Fullscreen mobile simulator: chart pinned at top with scrollable accordion controls"</li>

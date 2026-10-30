@@ -1,27 +1,10 @@
+use super::constants::{CELSIUS_TO_KELVIN, STEFAN_BOLTZMANN};
+use super::surface::open_top_flux;
 use super::MugParameters;
 
 /// Maximum simulation duration in minutes for the lumped model.
 /// Used to ensure metrics aren't clamped by chart duration.
 pub const MAX_SIMULATION_MINUTES: usize = 120;
-
-// Physical constants for evaporation and radiation
-const STEFAN_BOLTZMANN: f64 = 5.670_374e-8; // W/(m²·K⁴)
-const WATER_EMISSIVITY: f64 = 0.96;
-const LATENT_HEAT_VAPORIZATION: f64 = 2.26e6; // J/kg
-const R_VAPOR: f64 = 461.5; // J/(kg·K) specific gas constant for water vapor
-const RHO_AIR: f64 = 1.18; // kg/m³
-const CP_AIR: f64 = 1005.0; // J/(kg·K)
-const RELATIVE_HUMIDITY: f64 = 0.50; // 50% indoor RH
-/// Buoyancy enhancement for evaporation over an open hot liquid surface.
-/// The Lewis analogy underestimates mass transfer because the rising thermal
-/// plume above the cup carries vapor away faster than the flat-plate analogy
-/// predicts. A factor of ~2.5 matches experimental data for open cups.
-const EVAP_ENHANCEMENT: f64 = 2.5;
-
-/// Saturation vapor pressure via Tetens formula (Pa)
-fn saturation_vapor_pressure(t_celsius: f64) -> f64 {
-    610.78 * (17.27 * t_celsius / (t_celsius + 237.3)).exp()
-}
 
 /// A single data point in the cooling simulation
 #[derive(Debug, Clone, PartialEq)]
@@ -34,12 +17,16 @@ pub struct CoolingDataPoint {
 impl CoolingDataPoint {
     /// Extract (time_minutes, coffee_temp_c) pairs from a slice.
     pub fn coffee_series(data: &[Self]) -> Vec<(f64, f64)> {
-        data.iter().map(|p| (p.time_minutes, p.coffee_temp_c)).collect()
+        data.iter()
+            .map(|p| (p.time_minutes, p.coffee_temp_c))
+            .collect()
     }
 
     /// Extract (time_minutes, mug_temp_c) pairs from a slice.
     pub fn mug_series(data: &[Self]) -> Vec<(f64, f64)> {
-        data.iter().map(|p| (p.time_minutes, p.mug_temp_c)).collect()
+        data.iter()
+            .map(|p| (p.time_minutes, p.mug_temp_c))
+            .collect()
     }
 }
 
@@ -55,11 +42,15 @@ impl CoolingDataPoint {
 ///
 /// The model tracks three heat flows:
 ///
-/// 1. **Coffee → Mug (conduction)**: `Q = k_eff × (T_coffee - T_mug)`
-///    where k_eff is an effective heat transfer coefficient based on material conductivity
+/// 1. **Coffee → Mug (conduction)**: `Q = G × (T_coffee - T_mug)`
+///    where G is the water-side film and half the wall in series
+///    (`MugParameters::coffee_mug_conductance`)
 ///
-/// 2. **Coffee → Environment (convection)**: `Q = h × A_top × (T_coffee - T_room)`
-///    Heat lost from the exposed coffee surface (top of mug)
+/// 2. **Coffee → Environment (open top)**: `Q = A_open × q(T_coffee)`
+///    Convection, T⁴ radiation and evaporation from the exposed coffee surface,
+///    with `q` from `surface::open_top_flux` and `A_open` the lid opening's
+///    share of the top (`MugParameters::open_top_area_m2`). Evaporation continues at and below
+///    room temperature, so the coffee can settle below room.
 ///
 /// 3. **Mug → Environment (convection)**: `Q = h × A_walls × (T_mug - T_room)`
 ///    Heat lost from the mug's outer walls
@@ -76,19 +67,16 @@ impl CoolingDataPoint {
 /// ## Assumptions and Limitations
 ///
 /// - Uniform temperature distribution within coffee and mug (lumped capacitance)
-/// - No lid on the mug (open-top convection)
+/// - The lid opening (`exposure`) sets the open top area; the mug is always present
 /// - Constant room temperature
 /// - 50% relative humidity assumed for evaporative cooling
 /// - Simplified geometry (cylindrical approximation)
 ///
 /// Returns temperature data points, 5 per minute for smooth curves.
-pub fn simulate_lumped_numerical(params: &MugParameters, duration_minutes: usize) -> Vec<CoolingDataPoint> {
-    // Single-body mode: when exposure >= 1.0, there is no mug — coffee is a
-    // free-standing cylinder losing heat from all surfaces.
-    if params.exposure_pct >= 1.0 {
-        return simulate_single_body_numerical(params, duration_minutes);
-    }
-
+pub fn simulate_lumped_numerical(
+    params: &MugParameters,
+    duration_minutes: usize,
+) -> Vec<CoolingDataPoint> {
     let record_interval = 0.2; // Record every 0.2 minutes (12 seconds)
     let mut results = Vec::with_capacity((duration_minutes as f64 / record_interval) as usize + 1);
 
@@ -110,31 +98,15 @@ pub fn simulate_lumped_numerical(params: &MugParameters, duration_minutes: usize
     // Natural convection in air: ~5-15 W/(m²·K)
     // For a mug with ~0.03 m² surface area, that's ~0.15-0.45 W/K total
     //
-    // Coffee-to-mug transfer is faster (direct contact, conduction)
-    //
-    // APPROXIMATION NOTE: The coefficient `2.0 × thermal_conductivity` is a simplified
-    // model for coffee-to-mug heat transfer. In reality, this would depend on:
-    // - Mug wall thickness and geometry
-    // - Contact area between liquid and mug
-    // - Boundary layer effects at the liquid-solid interface
-    // - Natural convection currents within the coffee
-    //
-    // A more accurate model would use: k_eff = k × A / L (Fourier's law)
-    // where A is contact area and L is characteristic length. However, the simplified
-    // coefficient produces realistic cooling curves for typical mug configurations.
-    let coffee_mug_coefficient = 2.0 * params.material.thermal_conductivity();
+    // Coffee-to-mug conductance from the wetted wall area, water-side film
+    // and half the wall thickness (see MugParameters::coffee_mug_conductance)
+    let coffee_mug_coefficient = params.coffee_mug_conductance();
 
-    // Lid opening fraction — scales top-surface losses (evaporation, convection, radiation)
-    let exposure = params.exposure_pct;
-
-    // Environment heat loss coefficients using actual surface areas
-    let a_top = params.top_surface_area_m2();
+    // Environment heat loss coefficients using actual surface areas; the open
+    // top area carries every coffee-surface loss (evaporation, convection, radiation)
+    let a_open = params.open_top_area_m2();
     let a_outer = params.outer_surface_area_m2();
-    let coffee_env_coefficient = exposure * params.h_conv * a_top;
     let mug_env_coefficient = params.h_conv * a_outer;
-
-    // Mass transfer coefficient for evaporation (Lewis analogy)
-    let h_mass = params.h_conv / (RHO_AIR * CP_AIR);
 
     // Mug emissivity for radiation
     let mug_emissivity = params.emissivity;
@@ -158,35 +130,22 @@ pub fn simulate_lumped_numerical(params: &MugParameters, duration_minutes: usize
         // Newton's Law of Cooling: Q = k × ΔT
         let q_coffee_to_mug = coffee_mug_coefficient * (t_coffee - t_mug);
 
-        // Heat flow from coffee to environment (convection from top surface)
-        let q_coffee_to_env = coffee_env_coefficient * (t_coffee - t_room);
-
         // Heat flow from mug to environment (convection from outer walls)
         let q_mug_to_env = mug_env_coefficient * (t_mug - t_room);
 
-        // Evaporative heat loss from the open coffee surface
-        let t_coffee_k = t_coffee + 273.15;
-        let t_room_k = t_room + 273.15;
-        let rho_v_surface = saturation_vapor_pressure(t_coffee) / (R_VAPOR * t_coffee_k);
-        let rho_v_ambient = RELATIVE_HUMIDITY * saturation_vapor_pressure(t_room) / (R_VAPOR * t_room_k);
-        let q_evap = if rho_v_surface > rho_v_ambient {
-            exposure * EVAP_ENHANCEMENT * h_mass * a_top * LATENT_HEAT_VAPORIZATION * (rho_v_surface - rho_v_ambient)
-        } else {
-            0.0
-        };
+        // Heat flow from the coffee through the lid opening: convection,
+        // radiation and evaporation, evaluated exactly each step
+        let q_coffee_to_env = a_open * open_top_flux(t_coffee, t_room, params.h_conv);
 
-        // Radiative heat loss
-        let t_mug_k = t_mug + 273.15;
-        let q_rad_coffee = exposure * WATER_EMISSIVITY * STEFAN_BOLTZMANN * a_top
-            * (t_coffee_k.powi(4) - t_room_k.powi(4));
-        let q_rad_mug = mug_emissivity * STEFAN_BOLTZMANN * a_outer
-            * (t_mug_k.powi(4) - t_room_k.powi(4));
+        // Radiative heat loss from the mug's outer walls
+        let t_mug_k = t_mug + CELSIUS_TO_KELVIN;
+        let t_room_k = t_room + CELSIUS_TO_KELVIN;
+        let q_rad_mug =
+            mug_emissivity * STEFAN_BOLTZMANN * a_outer * (t_mug_k.powi(4) - t_room_k.powi(4));
 
         // Temperature changes using forward Euler integration
-        let dt_coffee = -(q_coffee_to_mug + q_coffee_to_env + q_evap + q_rad_coffee)
-            * dt_seconds / coffee_thermal_mass;
-        let dt_mug = (q_coffee_to_mug - q_mug_to_env - q_rad_mug)
-            * dt_seconds / mug_thermal_mass;
+        let dt_coffee = -(q_coffee_to_mug + q_coffee_to_env) * dt_seconds / coffee_thermal_mass;
+        let dt_mug = (q_coffee_to_mug - q_mug_to_env - q_rad_mug) * dt_seconds / mug_thermal_mass;
 
         t_coffee += dt_coffee;
         t_mug += dt_mug;
@@ -198,69 +157,6 @@ pub fn simulate_lumped_numerical(params: &MugParameters, duration_minutes: usize
                 time_minutes: next_record,
                 coffee_temp_c: t_coffee,
                 mug_temp_c: t_mug,
-            });
-            next_record += record_interval;
-        }
-    }
-
-    results
-}
-
-/// Single-body numerical simulation: coffee cylinder with no mug.
-/// All surfaces (top + bottom + sides) lose heat via convection, radiation, and evaporation.
-fn simulate_single_body_numerical(params: &MugParameters, duration_minutes: usize) -> Vec<CoolingDataPoint> {
-    let record_interval = 0.2;
-    let mut results = Vec::with_capacity((duration_minutes as f64 / record_interval) as usize + 1);
-
-    let coffee_thermal_mass = params.coffee_thermal_mass();
-    let a_total = params.coffee_surface_area_m2();
-    let a_top = params.top_surface_area_m2(); // evaporation only from liquid-air interface
-    let t_room = params.room_temp_c;
-    let mut t_coffee = params.coffee_temp_c;
-
-    let h_mass = params.h_conv / (RHO_AIR * CP_AIR);
-
-    let dt = 0.01; // 0.6 seconds
-    let dt_seconds = dt * 60.0;
-
-    results.push(CoolingDataPoint {
-        time_minutes: 0.0,
-        coffee_temp_c: t_coffee,
-        mug_temp_c: t_room,
-    });
-
-    let mut time = 0.0;
-    let mut next_record = record_interval;
-
-    while time < duration_minutes as f64 {
-        let t_coffee_k = t_coffee + 273.15;
-        let t_room_k = t_room + 273.15;
-
-        // Convection from all surfaces
-        let q_conv = params.h_conv * a_total * (t_coffee - t_room);
-
-        // Radiation from all surfaces (water emissivity)
-        let q_rad = WATER_EMISSIVITY * STEFAN_BOLTZMANN * a_total
-            * (t_coffee_k.powi(4) - t_room_k.powi(4));
-
-        // Evaporation only from top surface (liquid-air interface)
-        let rho_v_surface = saturation_vapor_pressure(t_coffee) / (R_VAPOR * t_coffee_k);
-        let rho_v_ambient = RELATIVE_HUMIDITY * saturation_vapor_pressure(t_room) / (R_VAPOR * t_room_k);
-        let q_evap = if rho_v_surface > rho_v_ambient {
-            EVAP_ENHANCEMENT * h_mass * a_top * LATENT_HEAT_VAPORIZATION * (rho_v_surface - rho_v_ambient)
-        } else {
-            0.0
-        };
-
-        let dt_coffee = -(q_conv + q_rad + q_evap) * dt_seconds / coffee_thermal_mass;
-        t_coffee += dt_coffee;
-        time += dt;
-
-        if time >= next_record {
-            results.push(CoolingDataPoint {
-                time_minutes: next_record,
-                coffee_temp_c: t_coffee,
-                mug_temp_c: t_room,
             });
             next_record += record_interval;
         }
@@ -286,7 +182,7 @@ mod tests {
             preheat_temp_c: 90.0,
             h_conv: 10.0,
             emissivity: MugMaterial::Ceramic.emissivity(),
-            exposure_pct: 0.2,
+            exposure: 0.2,
         };
 
         let cold_data = simulate_lumped_numerical(&base_params, 30);
@@ -321,7 +217,7 @@ mod tests {
             preheat_temp_c: 90.0,
             h_conv: 10.0,
             emissivity: MugMaterial::Ceramic.emissivity(),
-            exposure_pct: 0.2,
+            exposure: 0.2,
         };
 
         let data = simulate_lumped_numerical(&params, 60);
@@ -363,7 +259,7 @@ mod tests {
                 preheat_temp_c: 90.0,
                 h_conv: 10.0,
                 emissivity: material.emissivity(),
-                exposure_pct: 0.2,
+                exposure: 0.2,
             };
 
             let data = simulate_lumped_numerical(&params, 30);
@@ -397,7 +293,7 @@ mod tests {
             preheat_temp_c: 90.0,
             h_conv: 10.0,
             emissivity: MugMaterial::Ceramic.emissivity(),
-            exposure_pct: 0.2,
+            exposure: 0.2,
         };
 
         let ceramic_data = simulate_lumped_numerical(&base, 60);
@@ -435,7 +331,7 @@ mod tests {
             preheat_temp_c: 90.0,
             h_conv: 10.0,
             emissivity: MugMaterial::Ceramic.emissivity(),
-            exposure_pct: 0.2,
+            exposure: 0.2,
         };
 
         let data = simulate_lumped_numerical(&params, 60);
@@ -465,7 +361,7 @@ mod tests {
             preheat_temp_c: 90.0,
             h_conv: 10.0,
             emissivity: MugMaterial::Ceramic.emissivity(),
-            exposure_pct: 0.2,
+            exposure: 0.2,
         };
 
         let data = simulate_lumped_numerical(&params, 60);
@@ -497,7 +393,7 @@ mod tests {
             preheat_temp_c: 90.0,
             h_conv: 10.0,
             emissivity: MugMaterial::Ceramic.emissivity(),
-            exposure_pct: 0.2,
+            exposure: 0.2,
         };
 
         let large_params = MugParameters {
@@ -533,7 +429,7 @@ mod tests {
             preheat_temp_c: 90.0,
             h_conv: 10.0,
             emissivity: MugMaterial::Ceramic.emissivity(),
-            exposure_pct: 0.2,
+            exposure: 0.2,
         };
 
         let data = simulate_lumped_numerical(&params, 120);
@@ -598,7 +494,7 @@ mod tests {
             preheat_temp_c: 90.0,
             h_conv: 10.0,
             emissivity: MugMaterial::Ceramic.emissivity(),
-            exposure_pct: 0.2,
+            exposure: 0.2,
         };
 
         let data = simulate_lumped_numerical(&params, 30);
@@ -637,7 +533,7 @@ mod tests {
             preheat_temp_c: 90.0,
             h_conv: 10.0,
             emissivity: MugMaterial::Ceramic.emissivity(),
-            exposure_pct: 0.2,
+            exposure: 0.2,
         };
 
         let data = simulate_lumped_numerical(&params, 30);
@@ -662,7 +558,7 @@ mod tests {
             preheat_temp_c: 90.0,
             h_conv: 10.0,
             emissivity: MugMaterial::Ceramic.emissivity(),
-            exposure_pct: 0.2,
+            exposure: 0.2,
         };
 
         let data = simulate_lumped_numerical(&params, 10);
@@ -707,7 +603,7 @@ mod tests {
             preheat_temp_c: 90.0,
             h_conv: 10.0,
             emissivity: MugMaterial::Ceramic.emissivity(),
-            exposure_pct: 0.2,
+            exposure: 0.2,
         };
 
         let data = simulate_lumped_numerical(&params, 60);
@@ -732,80 +628,73 @@ mod tests {
     }
 
     #[test]
-    fn test_single_body_mug_temp_is_room_temp() {
-        let params = MugParameters {
-            material: MugMaterial::Ceramic,
-            volume_ml: 350.0,
-            wall_thickness_mm: 5.0,
-            coffee_temp_c: 95.0,
-            room_temp_c: 22.0,
-            preheated: false,
-            preheat_temp_c: 90.0,
-            h_conv: 10.0,
-            emissivity: MugMaterial::Ceramic.emissivity(),
-            exposure_pct: 1.0,
-        };
-
-        let data = simulate_lumped_numerical(&params, 60);
-
-        for point in &data {
-            assert!(
-                (point.mug_temp_c - params.room_temp_c).abs() < 1e-10,
-                "At t={:.1}, mug_temp ({:.4}) should equal room_temp ({:.1})",
-                point.time_minutes, point.mug_temp_c, params.room_temp_c,
-            );
-        }
-    }
-
-    #[test]
-    fn test_single_body_cools_faster_than_two_body() {
-        let base = MugParameters {
-            material: MugMaterial::Ceramic,
-            volume_ml: 350.0,
-            wall_thickness_mm: 5.0,
-            coffee_temp_c: 95.0,
-            room_temp_c: 22.0,
-            preheated: false,
-            preheat_temp_c: 90.0,
-            h_conv: 10.0,
-            emissivity: MugMaterial::Ceramic.emissivity(),
-            exposure_pct: 0.2,
-        };
-
-        let two_body = simulate_lumped_numerical(&base, 30);
-
-        let single_body_params = MugParameters {
-            exposure_pct: 1.0,
-            ..base
-        };
-        let single_body = simulate_lumped_numerical(&single_body_params, 30);
-
-        // At 30 minutes, single body should be cooler (no mug thermal buffer)
-        let two_body_final = two_body.last().unwrap().coffee_temp_c;
-        let single_body_final = single_body.last().unwrap().coffee_temp_c;
-
-        assert!(
-            single_body_final < two_body_final,
-            "Single body ({:.1}°C) should cool faster than two body ({:.1}°C)",
-            single_body_final, two_body_final,
-        );
-    }
-
-    #[test]
     fn test_radiation_order_of_magnitude() {
         // Radiative heat loss from a mug-sized surface at 80°C should be ~5–15W
-        let t_hot_k: f64 = 80.0 + 273.15;
-        let t_room_k: f64 = 22.0 + 273.15;
+        let t_hot_k: f64 = 80.0 + CELSIUS_TO_KELVIN;
+        let t_room_k: f64 = 22.0 + CELSIUS_TO_KELVIN;
         let emissivity = 0.90; // ceramic
         let a_outer = 0.03; // ~0.03 m² for a typical mug
 
-        let q_rad = emissivity * STEFAN_BOLTZMANN * a_outer
-            * (t_hot_k.powi(4) - t_room_k.powi(4));
+        let q_rad = emissivity * STEFAN_BOLTZMANN * a_outer * (t_hot_k.powi(4) - t_room_k.powi(4));
 
         assert!(
             q_rad > 2.0 && q_rad < 20.0,
             "Radiative loss should be ~5-15W, got {:.2}W",
             q_rad
+        );
+    }
+
+    #[test]
+    fn lumped_settles_below_room() {
+        // Coffee keeps evaporating at room temperature, so with the mug warmed
+        // by the room it settles a few degrees below room, toward wet-bulb.
+        let params = MugParameters {
+            material: MugMaterial::Ceramic,
+            volume_ml: 350.0,
+            wall_thickness_mm: 5.0,
+            coffee_temp_c: 30.0,
+            room_temp_c: 22.0,
+            preheated: false,
+            preheat_temp_c: 22.0,
+            h_conv: 10.0,
+            emissivity: MugMaterial::Ceramic.emissivity(),
+            exposure: 1.0,
+        };
+        let numerical = simulate_lumped_numerical(&params, 600);
+        let analytical = crate::physics::simulate_lumped_analytical(&params, 600);
+        for (name, data) in [("numerical", &numerical), ("analytical", &analytical)] {
+            let final_coffee = data.last().unwrap().coffee_temp_c;
+            assert!(
+                final_coffee < 22.0 && final_coffee > 10.0,
+                "{name}: coffee after 600 min = {final_coffee:.3} °C, expected in (10, 22)"
+            );
+        }
+    }
+
+    #[test]
+    fn lumped_numerical_steel_thin_wall_monotone() {
+        // Thin steel has a tiny mug heat capacity and a large conductance:
+        // the explicit step must not make the mug temperature oscillate.
+        let params = MugParameters {
+            material: MugMaterial::StainlessSteel,
+            volume_ml: 350.0,
+            wall_thickness_mm: 1.0,
+            coffee_temp_c: 95.0,
+            room_temp_c: 22.0,
+            preheated: false,
+            preheat_temp_c: 22.0,
+            h_conv: 10.0,
+            emissivity: MugMaterial::StainlessSteel.emissivity(),
+            exposure: 0.2,
+        };
+        let data = simulate_lumped_numerical(&params, 5);
+        let mug: Vec<f64> = data.iter().map(|p| p.mug_temp_c).collect();
+        let diffs: Vec<f64> = mug.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(diffs[0] > 0.0, "mug should warm first");
+        let sign_changes = diffs.windows(2).filter(|w| w[0] * w[1] < 0.0).count();
+        assert!(
+            sign_changes <= 1,
+            "mug temp oscillates: {sign_changes} sign changes"
         );
     }
 }

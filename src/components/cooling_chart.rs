@@ -9,7 +9,12 @@ pub(crate) const CHART_BOTTOM: f64 = 165.0;
 pub(crate) const CHART_HEIGHT: f64 = 145.0;
 
 /// Convert time/temp data points to SVG polyline coordinates.
-pub(crate) fn to_chart_points(data: &[(f64, f64)], duration: f64, t_top: f64, t_bot: f64) -> String {
+pub(crate) fn to_chart_points(
+    data: &[(f64, f64)],
+    duration: f64,
+    t_top: f64,
+    t_bot: f64,
+) -> String {
     let t_range = t_top - t_bot;
     if t_range.abs() < 1e-6 {
         return String::new();
@@ -23,6 +28,23 @@ pub(crate) fn to_chart_points(data: &[(f64, f64)], duration: f64, t_top: f64, t_
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Lowest temperature among the points plotted up to `duration` minutes,
+/// or `+∞` when nothing is plotted.
+pub(crate) fn lowest_plotted(series: &[&[(f64, f64)]], duration: f64) -> f64 {
+    series
+        .iter()
+        .flat_map(|s| s.iter())
+        .filter(|(t, _)| *t <= duration)
+        .map(|&(_, temp)| temp)
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// Bottom of a temperature-over-time y-axis: room temperature, or the whole
+/// degree below the lowest plotted value when coffee settles below room.
+pub(crate) fn time_axis_bottom(room: f64, lowest: f64) -> f64 {
+    room.min(lowest.floor())
 }
 
 /// Shared Temperature Over Time chart used by both lumped and PDE simulations.
@@ -40,7 +62,7 @@ pub fn CoolingChart(
     hot_mug: Memo<Vec<(f64, f64)>>,
     /// Temperature at top of Y-axis (e.g. 100.0 for lumped, coffee_temp for PDE)
     temp_top: Memo<f64>,
-    /// Room temperature (bottom of meaningful Y range)
+    /// Room temperature (drawn as a reference line)
     room_temp: ReadSignal<f64>,
     /// Minimum drinkable temperature (threshold line)
     min_drinkable: ReadSignal<f64>,
@@ -49,22 +71,37 @@ pub fn CoolingChart(
     /// Display temperatures in Fahrenheit
     use_fahrenheit: ReadSignal<bool>,
     /// Time in minutes when cold mug crosses threshold
-    crossing_cold: Memo<f64>,
+    crossing_cold: Memo<Option<f64>>,
     /// Time in minutes when preheated mug crosses threshold
-    crossing_hot: Memo<f64>,
+    crossing_hot: Memo<Option<f64>>,
 ) -> impl IntoView {
     let display_temp = move |c: f64| fmt_temp(c, use_fahrenheit.get());
 
-    let threshold_y = create_memo(move |_| {
-        let t_top = temp_top.get();
-        let t_bot = room_temp.get();
-        let t_range = t_top - t_bot;
+    let temp_bot = create_memo(move |_| {
+        let lowest = lowest_plotted(
+            &[
+                &cold_coffee.get(),
+                &hot_coffee.get(),
+                &cold_mug.get(),
+                &hot_mug.get(),
+            ],
+            duration_minutes.get() as f64,
+        );
+        time_axis_bottom(room_temp.get(), lowest)
+    });
+
+    // SVG y of a temperature on this chart's axis
+    let temp_to_y = move |temp: f64| {
+        let t_bot = temp_bot.get();
+        let t_range = temp_top.get() - t_bot;
         if t_range.abs() < 1e-6 {
             100.0
         } else {
-            CHART_BOTTOM - ((min_drinkable.get() - t_bot) / t_range * CHART_HEIGHT)
+            CHART_BOTTOM - ((temp - t_bot) / t_range * CHART_HEIGHT)
         }
-    });
+    };
+    let threshold_y = create_memo(move |_| temp_to_y(min_drinkable.get()));
+    let room_y = create_memo(move |_| temp_to_y(room_temp.get()));
 
     view! {
         <div class="chart-placeholder">
@@ -80,7 +117,7 @@ pub fn CoolingChart(
                     {move || display_temp(min_drinkable.get())}
                 </text>
                 <text x="5" y="168" class="axis-label">
-                    {move || display_temp(room_temp.get())}
+                    {move || display_temp(temp_bot.get())}
                 </text>
 
                 // X-axis labels
@@ -92,8 +129,14 @@ pub fn CoolingChart(
                     {move || format!("{} min", duration_minutes.get())}
                 </text>
 
-                // Room temperature line (baseline)
-                <line x1=CHART_LEFT y1=CHART_BOTTOM x2=CHART_RIGHT y2=CHART_BOTTOM class="grid-line room-temp"/>
+                // Room temperature line
+                <line
+                    x1=CHART_LEFT
+                    y1=move || room_y.get()
+                    x2=CHART_RIGHT
+                    y2=move || room_y.get()
+                    class="grid-line room-temp"
+                />
 
                 // Drinkable threshold line
                 <line
@@ -111,7 +154,7 @@ pub fn CoolingChart(
                         &cold_coffee.get(),
                         duration_minutes.get() as f64,
                         temp_top.get(),
-                        room_temp.get(),
+                        temp_bot.get(),
                     )
                 />
 
@@ -122,7 +165,7 @@ pub fn CoolingChart(
                         &hot_coffee.get(),
                         duration_minutes.get() as f64,
                         temp_top.get(),
-                        room_temp.get(),
+                        temp_bot.get(),
                     )
                 />
 
@@ -133,7 +176,7 @@ pub fn CoolingChart(
                         &cold_mug.get(),
                         duration_minutes.get() as f64,
                         temp_top.get(),
-                        room_temp.get(),
+                        temp_bot.get(),
                     )
                 />
 
@@ -144,15 +187,16 @@ pub fn CoolingChart(
                         &hot_mug.get(),
                         duration_minutes.get() as f64,
                         temp_top.get(),
-                        room_temp.get(),
+                        temp_bot.get(),
                     )
                 />
 
                 // Crossing marker — cold mug
                 {move || {
-                    let mins = crossing_cold.get();
                     let duration = duration_minutes.get() as f64;
-                    if mins < duration {
+                    // No crossing: nothing to mark, the line stays above the threshold.
+                    let mins = crossing_cold.get().filter(|m| *m < duration);
+                    if let Some(mins) = mins {
                         let x = CHART_LEFT + (mins / duration) * CHART_WIDTH;
                         let y = threshold_y.get();
                         Some(view! {
@@ -166,9 +210,10 @@ pub fn CoolingChart(
 
                 // Crossing marker — preheated
                 {move || {
-                    let mins = crossing_hot.get();
                     let duration = duration_minutes.get() as f64;
-                    if mins < duration {
+                    // No crossing: nothing to mark, the line stays above the threshold.
+                    let mins = crossing_hot.get().filter(|m| *m < duration);
+                    if let Some(mins) = mins {
                         let x = CHART_LEFT + (mins / duration) * CHART_WIDTH;
                         let y = threshold_y.get();
                         Some(view! {
@@ -193,5 +238,22 @@ pub fn CoolingChart(
                 </div>
             </div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn time_axis_bottom_covers_values_below_room() {
+        let cold = [(0.0, 30.0), (60.0, 19.4), (130.0, 15.0)];
+        let hot = [(0.0, 30.0), (60.0, 20.2)];
+        let lowest = lowest_plotted(&[&cold, &hot], 120.0);
+        assert_eq!(lowest, 19.4);
+        assert_eq!(time_axis_bottom(22.0, lowest), 19.0);
+        // Coffee that stays above room keeps room as the bottom.
+        assert_eq!(time_axis_bottom(22.0, 40.0), 22.0);
+        assert_eq!(lowest_plotted(&[], 120.0), f64::INFINITY);
     }
 }

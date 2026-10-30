@@ -10,11 +10,13 @@
 //!
 //! ## Finite-domain limitation
 //!
-//! This solver uses a finite domain [0, r_max] with a Robin BC at r_max.
-//! Physically the air extends to infinity, so the solution depends on r_max:
-//! a small r_max acts like a sealed spherical room. In practice, r_max >= 10x
-//! r_outer is sufficient for convergence (the boundary barely affects the
-//! liquid/shell temperatures).
+//! This solver uses a finite domain [0, r_max] with the air held at ambient
+//! temperature at r_max (Dirichlet). Convection and linearised radiation act at
+//! r_o as the surface loss `h_conv`. Physically the air extends to infinity, so
+//! the solution depends on r_max: a small r_max pins room-temperature air close
+//! to the mug and speeds cooling. In practice, r_max >= 10x r_outer is
+//! sufficient for convergence (the boundary barely affects the liquid/shell
+//! temperatures).
 //!
 //! ## Future: infinite-domain continuous-spectrum approach
 //!
@@ -32,6 +34,9 @@
 //! - Computing the spectral density ρ(λ) from the interface conditions
 //! - A different normalization convention (eigenfunctions are not L² on [0,∞))
 
+use super::constants::{CELSIUS_TO_KELVIN, K_AIR, STEFAN_BOLTZMANN};
+use super::heat_equation_numerical::HeatMaterial;
+use super::surface::three_region_h_inner;
 use std::f64::consts::PI;
 
 /// Parameters for the three-region analytical solution
@@ -63,41 +68,128 @@ pub struct ThreeRegionParams {
     pub t_ambient: f64,
     /// Number of eigenvalues/modes to use
     pub num_modes: usize,
-    /// Convection coefficient at r_max in W/(m²·K)
-    /// Used in Robin BC: -k₃ ∂T/∂r = h_eff (T - T_amb) where h_eff = h_conv + k₃/r_max
+    /// Surface loss coefficient at the shell's outer surface r_o in W/(m²·K)
+    /// (convection plus linearised radiation in production). Enters the flux
+    /// balance −k₂ ∂T/∂r = −k₃ ∂T/∂r + h_conv·(T − T_amb) at r = r_o.
     pub h_conv: f64,
     /// Inner surface heat loss coefficient in W/(m²·K)
     ///
-    /// Models heat lost through the lid opening at r = r_inner.
+    /// Models heat lost through the lid opening at r = r_inner as a sink.
     /// Modifies the flux condition from pure continuity to:
-    ///   k₁ ∂T/∂r = k₂ ∂T/∂r + h_inner·(T - T_amb)
+    ///   k₁ ∂T/∂r = k₂ ∂T/∂r − h_inner·(T − T_amb)
+    /// (the heat arriving from the liquid, −k₁∂T/∂r, feeds the shell and the sink).
     ///
-    /// Typically h_inner = exposure_fraction × h_eff_exposed, where h_eff_exposed
-    /// includes convection, radiation, and evaporation from the liquid surface.
-    /// Set to 0.0 to disable (pure flux continuity at r_inner).
+    /// Production sets it from `surface::three_region_h_inner`: the open-top
+    /// loss (convection, radiation, evaporation) linearised for one segment
+    /// and scaled by the open share of the sphere. Set to 0.0 for a sealed lid (pure flux
+    /// continuity at r_inner).
     pub h_inner: f64,
 }
 
 impl Default for ThreeRegionParams {
     fn default() -> Self {
         Self {
-            r_inner: 0.022,      // 2.2 cm (liquid radius)
-            r_outer: 0.025,      // 2.5 cm (outer shell radius)
-            r_max: 0.075,        // 7.5 cm (3x outer radius)
-            alpha_1: 1.43e-7,    // Water
-            alpha_2: 4.73e-7,    // Ceramic
-            alpha_3: 2.19e-5,    // Air
-            k_1: 0.6,            // Water conductivity
-            k_2: 1.0,            // Ceramic conductivity
-            k_3: 0.026,          // Air conductivity
+            r_inner: 0.022,   // 2.2 cm (liquid radius)
+            r_outer: 0.025,   // 2.5 cm (outer shell radius)
+            r_max: 0.075,     // 7.5 cm (3x outer radius)
+            alpha_1: 1.43e-7, // Water
+            alpha_2: 4.73e-7, // Ceramic
+            alpha_3: 2.19e-5, // Air
+            k_1: 0.6,         // Water conductivity
+            k_2: 1.0,         // Ceramic conductivity
+            k_3: K_AIR,       // Air conductivity
             t_liquid_init: 95.0,
             t_shell_init: 80.0,
             t_ambient: 20.0,
-            num_modes: 50,       // More modes for better convergence
-            h_conv: 0.0,        // No additional convection (pure conduction)
-            h_inner: 0.0,       // No inner surface heat loss
+            num_modes: 50, // More modes for better convergence
+            h_conv: 0.0,   // No additional convection (pure conduction)
+            h_inner: 0.0,  // No inner surface heat loss
         }
     }
+}
+
+/// A mug as the simulator describes it, in the terms both heat-equation
+/// solvers share: geometry, the shell material, temperatures, the outer
+/// convection coefficient and the lid openness.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThreeRegionMug {
+    /// Liquid radius in meters
+    pub r_inner: f64,
+    /// Shell outer radius in meters
+    pub r_outer: f64,
+    /// Far boundary radius in meters
+    pub r_max: f64,
+    /// Shell material, including its surface emissivity
+    pub shell: HeatMaterial,
+    /// Initial liquid temperature °C
+    pub liquid_temp_c: f64,
+    /// Initial shell temperature °C
+    pub shell_temp_c: f64,
+    /// Room temperature °C
+    pub room_temp_c: f64,
+    /// Natural-convection coefficient in W/(m²·K)
+    pub h_conv: f64,
+    /// Lid openness 0–1
+    pub exposure: f64,
+    /// Number of eigenmodes
+    pub num_modes: usize,
+}
+
+impl ThreeRegionParams {
+    /// Parameters for `mug` with the whole run linearised once from its
+    /// initial temperatures: the open-top loss at the mean of the initial
+    /// liquid and room temperatures, the outer radiation at the initial
+    /// liquid temperature. The first segment of a run solved this way is the
+    /// reference the kernel tests compare against.
+    pub fn for_mug(mug: &ThreeRegionMug) -> Self {
+        Self::linearised(
+            mug,
+            0.5 * (mug.liquid_temp_c + mug.room_temp_c),
+            mug.liquid_temp_c,
+        )
+    }
+
+    /// Parameters for `mug`: water inside, air outside, and the surface
+    /// losses linearised at fixed temperatures, because the eigenfunction
+    /// expansion takes constant coefficients. The lid opening loses
+    /// `surface::three_region_h_inner` at liquid temperature `liquid_lin_c`
+    /// (r_inner); the outer surface loses `outer_surface_h` at outer-surface
+    /// temperature `outer_lin_c` (r_outer).
+    pub fn linearised(mug: &ThreeRegionMug, liquid_lin_c: f64, outer_lin_c: f64) -> Self {
+        let water = HeatMaterial::water();
+        let air = HeatMaterial::air();
+        Self {
+            r_inner: mug.r_inner,
+            r_outer: mug.r_outer,
+            r_max: mug.r_max,
+            alpha_1: water.diffusivity(),
+            alpha_2: mug.shell.diffusivity(),
+            alpha_3: air.diffusivity(),
+            k_1: water.conductivity,
+            k_2: mug.shell.conductivity,
+            k_3: air.conductivity,
+            t_liquid_init: mug.liquid_temp_c,
+            t_shell_init: mug.shell_temp_c,
+            t_ambient: mug.room_temp_c,
+            num_modes: mug.num_modes,
+            h_conv: outer_surface_h(
+                mug.h_conv,
+                mug.shell.emissivity,
+                outer_lin_c,
+                mug.room_temp_c,
+            ),
+            h_inner: three_region_h_inner(mug.exposure, liquid_lin_c, mug.room_temp_c, mug.h_conv),
+        }
+    }
+}
+
+/// Outer-surface loss coefficient for the analytical solver, in W/(m²·K):
+/// convection plus the shell's radiation as a secant toward room at surface
+/// temperature `surface_c`, h_conv + 4εσT_m³ with T_m the mean of surface
+/// and room temperatures.
+pub fn outer_surface_h(h_conv: f64, emissivity: f64, surface_c: f64, room_temp_c: f64) -> f64 {
+    let t_mean_k = 0.5 * (surface_c + room_temp_c) + CELSIUS_TO_KELVIN;
+    h_conv + 4.0 * emissivity * STEFAN_BOLTZMANN * t_mean_k.powi(3)
 }
 
 /// An eigenmode of the three-region problem
@@ -177,8 +269,8 @@ pub(crate) fn interface_determinant(lambda: f64, params: &ThreeRegionParams) -> 
     let h = params.h_conv;
     let sin_br = (beta_3 * r_max).sin();
     let cos_br = (beta_3 * r_max).cos();
-    let gn = -sin_br;  // gamma numerator
-    let gd = cos_br;   // gamma denominator
+    let gn = -sin_br; // gamma numerator
+    let gd = cos_br; // gamma denominator
 
     // Precompute trig values
     let s1i = (beta_1 * r_i).sin();
@@ -202,10 +294,10 @@ pub(crate) fn interface_determinant(lambda: f64, params: &ThreeRegionParams) -> 
     let m14 = 0.0;
 
     // Row 2: flux balance at r_i (with optional inner surface heat loss)
-    //   k₁ ∂φ₁/∂r = k₂ ∂φ₂/∂r + h_inner·φ   at r = r_i
-    // Multiplied by r_i²: the h_inner term adds -h_inner·r_i·sin(β₁r_i) to col 1.
+    //   k₁ ∂φ₁/∂r = k₂ ∂φ₂/∂r − h_inner·φ   at r = r_i  (sink)
+    // Multiplied by r_i²: the h_inner term adds +h_inner·r_i·sin(β₁r_i) to col 1.
     let h_ri = params.h_inner * r_i;
-    let m21 = k_1 * (r_i * beta_1 * c1i - s1i) - h_ri * s1i;
+    let m21 = k_1 * (r_i * beta_1 * c1i - s1i) + h_ri * s1i;
     let m22 = -k_2 * (r_i * beta_2 * c2i - s2i);
     let m23 = -k_2 * (-r_i * beta_2 * s2i - c2i);
     let m24 = 0.0;
@@ -230,10 +322,14 @@ pub(crate) fn interface_determinant(lambda: f64, params: &ThreeRegionParams) -> 
     // det = m11 * M11 - m12 * M12 + m13 * M13 - m14 * M14
     // where Mij is the 3x3 minor
 
-    let minor_11 = m22 * (m33 * m44 - m34 * m43) - m23 * (m32 * m44 - m34 * m42) + m24 * (m32 * m43 - m33 * m42);
-    let minor_12 = m21 * (m33 * m44 - m34 * m43) - m23 * (m31 * m44 - m34 * m41) + m24 * (m31 * m43 - m33 * m41);
-    let minor_13 = m21 * (m32 * m44 - m34 * m42) - m22 * (m31 * m44 - m34 * m41) + m24 * (m31 * m42 - m32 * m41);
-    let minor_14 = m21 * (m32 * m43 - m33 * m42) - m22 * (m31 * m43 - m33 * m41) + m23 * (m31 * m42 - m32 * m41);
+    let minor_11 = m22 * (m33 * m44 - m34 * m43) - m23 * (m32 * m44 - m34 * m42)
+        + m24 * (m32 * m43 - m33 * m42);
+    let minor_12 = m21 * (m33 * m44 - m34 * m43) - m23 * (m31 * m44 - m34 * m41)
+        + m24 * (m31 * m43 - m33 * m41);
+    let minor_13 = m21 * (m32 * m44 - m34 * m42) - m22 * (m31 * m44 - m34 * m41)
+        + m24 * (m31 * m42 - m32 * m41);
+    let minor_14 = m21 * (m32 * m43 - m33 * m42) - m22 * (m31 * m43 - m33 * m41)
+        + m23 * (m31 * m42 - m32 * m41);
 
     m11 * minor_11 - m12 * minor_12 + m13 * minor_13 - m14 * minor_14
 }
@@ -266,28 +362,57 @@ fn find_eigenvalues(params: &ThreeRegionParams, num_modes: usize) -> Vec<f64> {
 
     let mut prev_lambda = lambda_min;
     let mut prev_det = interface_determinant(prev_lambda, params);
+    // The sample before `prev`, to spot a dip of |det| toward zero.
+    let mut before: Option<(f64, f64)> = None;
+
+    let push = |root: f64, eigenvalues: &mut Vec<f64>| {
+        // Brackets never overlap, so the same root can only come back when it
+        // sits on a shared sample point; anything farther apart than the
+        // bisection tolerance is a distinct mode, however close.
+        let is_new = eigenvalues
+            .last()
+            .is_none_or(|&last: &f64| (root - last).abs() > ROOT_TOLERANCE);
+        if is_new {
+            eigenvalues.push(root);
+        }
+    };
 
     for i in 1..=num_search_points {
         let lambda = lambda_min + i as f64 * d_lambda;
         let det = interface_determinant(lambda, params);
 
-        // Check for sign change (root crossing)
-        if prev_det.is_finite() && det.is_finite() && prev_det * det < 0.0 {
-            // Refine with bisection
-            if let Some(root) = bisect_root(prev_lambda, lambda, params) {
-                // Avoid duplicates (eigenvalues should be well-separated)
-                let is_new = eigenvalues.last().is_none_or(|&last: &f64| {
-                    (root - last).abs() > lambda_fundamental * 0.01
-                });
-                if is_new {
-                    eigenvalues.push(root);
-                    if eigenvalues.len() >= num_modes {
-                        break;
+        if prev_det.is_finite() && det.is_finite() {
+            if prev_det * det < 0.0 {
+                // Sign change: one root (or an odd number) in the step.
+                if let Some(root) = bisect_root(prev_lambda, lambda, params) {
+                    push(root, &mut eigenvalues);
+                }
+            } else if let Some((lambda_b, det_b)) = before {
+                // Two roots closer than a step leave the sign unchanged; the
+                // determinant then dips toward zero between them. Find the
+                // dip's extremum and, if it crosses zero, bisect either side.
+                if det_b.is_finite()
+                    && det_b * prev_det > 0.0
+                    && prev_det.abs() < det_b.abs()
+                    && prev_det.abs() <= det.abs()
+                {
+                    let (lambda_dip, det_dip) = dip_extremum(lambda_b, lambda, prev_det, params);
+                    if det_dip * prev_det < 0.0 {
+                        for (a, b) in [(lambda_b, lambda_dip), (lambda_dip, lambda)] {
+                            if let Some(root) = bisect_root(a, b, params) {
+                                push(root, &mut eigenvalues);
+                            }
+                        }
                     }
                 }
             }
+            if eigenvalues.len() >= num_modes {
+                eigenvalues.truncate(num_modes);
+                break;
+            }
         }
 
+        before = Some((prev_lambda, prev_det));
         prev_det = det;
         prev_lambda = lambda;
     }
@@ -295,9 +420,44 @@ fn find_eigenvalues(params: &ThreeRegionParams, num_modes: usize) -> Vec<f64> {
     eigenvalues
 }
 
+/// The λ in [a, b] where the determinant comes closest to (or furthest
+/// past) zero from the side of `sign_ref`, by golden-section search on
+/// sign(sign_ref)·det, with the determinant there.
+fn dip_extremum(mut a: f64, mut b: f64, sign_ref: f64, params: &ThreeRegionParams) -> (f64, f64) {
+    let s = sign_ref.signum();
+    let f = |l: f64| s * interface_determinant(l, params);
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let mut c = b - ratio * (b - a);
+    let mut d = a + ratio * (b - a);
+    let (mut fc, mut fd) = (f(c), f(d));
+    for _ in 0..60 {
+        if fc < 0.0 || fd < 0.0 || (b - a) < 1e-12 {
+            break;
+        }
+        if fc < fd {
+            b = d;
+            d = c;
+            fd = fc;
+            c = b - ratio * (b - a);
+            fc = f(c);
+        } else {
+            a = c;
+            c = d;
+            fc = fd;
+            d = a + ratio * (b - a);
+            fd = f(d);
+        }
+    }
+    let lambda = if fc < fd { c } else { d };
+    (lambda, interface_determinant(lambda, params))
+}
+
+/// Half-width to which `bisect_root` brackets an eigenvalue.
+const ROOT_TOLERANCE: f64 = 1e-10;
+
 /// Bisection method to find a root of the determinant
 fn bisect_root(mut a: f64, mut b: f64, params: &ThreeRegionParams) -> Option<f64> {
-    let tol = 1e-10;
+    let tol = ROOT_TOLERANCE;
     let max_iter = 50;
 
     let mut fa = interface_determinant(a, params);
@@ -358,12 +518,12 @@ fn compute_coefficients(lambda: f64, params: &ThreeRegionParams) -> (f64, f64, f
     let c3o = (beta_3 * r_o).cos();
 
     // Condition 1: A s1i = B s2i + C c2i
-    // Condition 2 (flux + inner surface loss):
-    //   k₁ A (r_i β₁ c1i - s1i) - h_inner·r_i·A·s1i = k₂ (B(...) + C(...))
+    // Condition 2 (flux + inner surface sink):
+    //   k₁ A (r_i β₁ c1i - s1i) + h_inner·r_i·A·s1i = k₂ (B(...) + C(...))
 
     let rhs1 = a * s1i;
     let h_ri = params.h_inner * r_i;
-    let rhs2 = k_1 * a * (r_i * beta_1 * c1i - s1i) - h_ri * a * s1i;
+    let rhs2 = k_1 * a * (r_i * beta_1 * c1i - s1i) + h_ri * a * s1i;
 
     let a11 = s2i;
     let a12 = c2i;
@@ -387,7 +547,17 @@ fn compute_coefficients(lambda: f64, params: &ThreeRegionParams) -> (f64, f64, f
 /// Region 3 uses the pole-free form: D·(gd·sin(β₃r) + gn·cos(β₃r))/r
 /// where gn, gd are stored instead of γ = -tan(β₃R).
 #[allow(clippy::too_many_arguments)]
-fn eigenfunction_at_r(r: f64, lambda: f64, a: f64, b: f64, c: f64, d: f64, gn: f64, gd: f64, params: &ThreeRegionParams) -> f64 {
+fn eigenfunction_at_r(
+    r: f64,
+    lambda: f64,
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    gn: f64,
+    gd: f64,
+    params: &ThreeRegionParams,
+) -> f64 {
     let r_i = params.r_inner;
     let r_o = params.r_outer;
     let r_max = params.r_max;
@@ -411,20 +581,6 @@ fn eigenfunction_at_r(r: f64, lambda: f64, a: f64, b: f64, c: f64, d: f64, gn: f
     } else {
         // Beyond domain: φ(r_max) = 0 by Dirichlet BC, decay as 1/r
         0.0
-    }
-}
-
-/// Get the thermal capacity weight (k/α = ρc) for a given radius
-#[cfg(test)]
-fn thermal_capacity_weight(r: f64, params: &ThreeRegionParams) -> f64 {
-    // Weight = k/α = ρc (volumetric heat capacity)
-    // This is needed for proper orthogonality of eigenfunctions
-    if r <= params.r_inner {
-        params.k_1 / params.alpha_1
-    } else if r <= params.r_outer {
-        params.k_2 / params.alpha_2
-    } else {
-        params.k_3 / params.alpha_3
     }
 }
 
@@ -478,7 +634,10 @@ fn integral_sin_cos(beta: f64, a: f64, b: f64) -> f64 {
 /// This reduces to integrals of r*sin(βr) and r*cos(βr) which have exact antiderivatives.
 fn inner_product_initial(
     lambda: f64,
-    a: f64, b: f64, c: f64, _d: f64,
+    a: f64,
+    b: f64,
+    c: f64,
+    _d: f64,
     params: &ThreeRegionParams,
     _num_points: usize,
 ) -> f64 {
@@ -500,10 +659,9 @@ fn inner_product_initial(
 
     // Region 2 (shell, r_i to r_o): ∫ w₂ r² (dt_shell) (B sin(β₂r) + C cos(β₂r))/r dr
     //   = w₂ dt_shell [B ∫ r sin(β₂r) dr + C ∫ r cos(β₂r) dr]
-    let region2 = w2 * dt_shell * (
-        b * integral_r_sin(beta_2, r_i, r_o)
-        + c * integral_r_cos(beta_2, r_i, r_o)
-    );
+    let region2 = w2
+        * dt_shell
+        * (b * integral_r_sin(beta_2, r_i, r_o) + c * integral_r_cos(beta_2, r_i, r_o));
 
     // Region 3 (air, r_o to r_max): f(r) = 0, so no contribution
 
@@ -520,7 +678,12 @@ fn inner_product_initial(
 #[allow(clippy::too_many_arguments)]
 fn eigenfunction_norm_squared(
     lambda: f64,
-    a: f64, b: f64, c: f64, d: f64, gn: f64, gd: f64,
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    gn: f64,
+    gd: f64,
     params: &ThreeRegionParams,
     _num_points: usize,
 ) -> f64 {
@@ -541,19 +704,19 @@ fn eigenfunction_norm_squared(
 
     // Region 2: ∫_{r_i}^{r_o} w₂ r² ((B sin(β₂r) + C cos(β₂r))/r)² dr
     //   = w₂ [B² ∫sin² + 2BC ∫sin·cos + C² ∫cos²]
-    let norm2 = w2 * (
-        b * b * integral_sin2(beta_2, r_i, r_o)
-        + 2.0 * b * c * integral_sin_cos(beta_2, r_i, r_o)
-        + c * c * integral_cos2(beta_2, r_i, r_o)
-    );
+    let norm2 = w2
+        * (b * b * integral_sin2(beta_2, r_i, r_o)
+            + 2.0 * b * c * integral_sin_cos(beta_2, r_i, r_o)
+            + c * c * integral_cos2(beta_2, r_i, r_o));
 
     // Region 3 (pole-free): ∫_{r_o}^{r_max} w₃ r² (D(gd·sin + gn·cos)/r)² dr
     //   = w₃ D² [gd² ∫sin² + 2·gd·gn ∫sin·cos + gn² ∫cos²]
-    let norm3 = w3 * d * d * (
-        gd * gd * integral_sin2(beta_3, r_o, r_max)
-        + 2.0 * gd * gn * integral_sin_cos(beta_3, r_o, r_max)
-        + gn * gn * integral_cos2(beta_3, r_o, r_max)
-    );
+    let norm3 = w3
+        * d
+        * d
+        * (gd * gd * integral_sin2(beta_3, r_o, r_max)
+            + 2.0 * gd * gn * integral_sin_cos(beta_3, r_o, r_max)
+            + gn * gn * integral_cos2(beta_3, r_o, r_max));
 
     norm1 + norm2 + norm3
 }
@@ -569,7 +732,17 @@ pub fn compute_eigenmodes(params: &ThreeRegionParams) -> Vec<Eigenmode> {
             let (a_raw, b_raw, c_raw, d_raw, gn, gd) = compute_coefficients(lambda, params);
 
             // Compute the norm of the eigenfunction
-            let norm_sq = eigenfunction_norm_squared(lambda, a_raw, b_raw, c_raw, d_raw, gn, gd, params, num_integration_points);
+            let norm_sq = eigenfunction_norm_squared(
+                lambda,
+                a_raw,
+                b_raw,
+                c_raw,
+                d_raw,
+                gn,
+                gd,
+                params,
+                num_integration_points,
+            );
             let norm = norm_sq.sqrt();
 
             // Normalize the coefficients so that ||φ|| = 1
@@ -580,7 +753,8 @@ pub fn compute_eigenmodes(params: &ThreeRegionParams) -> Vec<Eigenmode> {
             };
 
             // Now amplitude = <f, φ> directly (since ||φ|| = 1)
-            let amplitude = inner_product_initial(lambda, a, b, c, d, params, num_integration_points);
+            let amplitude =
+                inner_product_initial(lambda, a, b, c, d, params, num_integration_points);
 
             Eigenmode {
                 lambda,
@@ -598,7 +772,12 @@ pub fn compute_eigenmodes(params: &ThreeRegionParams) -> Vec<Eigenmode> {
 
 /// Compute temperature at (r, t) using the eigenfunction expansion.
 /// At t=0, returns the exact initial conditions to avoid Gibbs phenomenon.
-fn three_region_temperature(r: f64, t: f64, params: &ThreeRegionParams, modes: &[Eigenmode]) -> f64 {
+fn three_region_temperature(
+    r: f64,
+    t: f64,
+    params: &ThreeRegionParams,
+    modes: &[Eigenmode],
+) -> f64 {
     // At t=0, return exact initial conditions (the series has Gibbs issues)
     if t <= 0.0 {
         if r <= params.r_inner {
@@ -613,7 +792,17 @@ fn three_region_temperature(r: f64, t: f64, params: &ThreeRegionParams, modes: &
     let mut sum = 0.0;
 
     for mode in modes {
-        let phi = eigenfunction_at_r(r, mode.lambda, mode.coeff_a, mode.coeff_b, mode.coeff_c, mode.coeff_d, mode.gamma_num, mode.gamma_den, params);
+        let phi = eigenfunction_at_r(
+            r,
+            mode.lambda,
+            mode.coeff_a,
+            mode.coeff_b,
+            mode.coeff_c,
+            mode.coeff_d,
+            mode.gamma_num,
+            mode.gamma_den,
+            params,
+        );
         let temporal = (-mode.lambda * mode.lambda * t).exp();
         sum += mode.amplitude * phi * temporal;
     }
@@ -644,7 +833,10 @@ fn three_region_snapshot(
     // point in the liquid region (which causes ~7°C error at t=0 for cold mugs).
     for &r_iface in &[params.r_inner, params.r_outer] {
         if let Some((idx, _)) = radii.iter().enumerate().min_by(|(_, a), (_, b)| {
-            (**a - r_iface).abs().partial_cmp(&(**b - r_iface).abs()).unwrap()
+            (**a - r_iface)
+                .abs()
+                .partial_cmp(&(**b - r_iface).abs())
+                .unwrap()
         }) {
             radii[idx] = r_iface;
         }
@@ -664,10 +856,12 @@ fn three_region_snapshot(
     }
 }
 
-/// Main entry point: simulate the three-region analytical solution
-/// `display_r_max` extends the radial grid beyond params.r_max for chart display.
-/// Accepts pre-computed eigenmodes to avoid redundant eigenvalue searches.
-pub fn simulate_three_region_analytical(
+/// Snapshots of one constant-coefficient solution: `params` and its `modes`
+/// over `duration_s`, evenly spaced. `display_r_max` extends the radial grid
+/// beyond params.r_max for chart display. The single-linearisation reference
+/// for the kernel tests; `simulate_three_region_relinearised` is the solver.
+#[cfg(test)]
+pub(crate) fn simulate_three_region_analytical(
     params: &ThreeRegionParams,
     modes: &[Eigenmode],
     duration_s: f64,
@@ -679,6 +873,302 @@ pub fn simulate_three_region_analytical(
         .map(|i| {
             let t = i as f64 / (num_snapshots - 1).max(1) as f64 * duration_s;
             three_region_snapshot(t, params, modes, num_radial_points, display_r_max)
+        })
+        .collect()
+}
+
+/// Number of equal time segments over which `simulate_three_region_relinearised`
+/// re-estimates the surface losses.
+///
+/// Why 10: measured against the numerical solver (ceramic; defaults and the
+/// 500 ml / 2 mm / 8 mm cases), 10 segments put every case's extra drinkable
+/// minutes within 0.1 min of it; 5 miss the 8 mm case by 0.17 min, and 2–3
+/// hit or miss the default case by luck. 15–40 segments move extra minutes
+/// by at most 0.06 and leave the crossings' bias (0.2–0.4 min early, from
+/// linearising at the liquid average rather than the open surface) in place,
+/// while the cost grows linearly with the count.
+pub const ANALYTICAL_SEGMENTS: usize = 10;
+
+/// Simpson panels per region when projecting a segment's starting profile
+/// onto that segment's eigenmodes.
+///
+/// Why 100: the run's metrics are insensitive (3 panels already keep extra
+/// minutes, penalty and crossings within 0.01 of 250 panels, because a
+/// segment's high modes decay within seconds), so the bound is the profile
+/// right after a segment boundary: at the panel's maximum of 100 series
+/// terms, 60 panels leave a 0.05 K RMS jump there and 100 keep it under
+/// 0.01 K (`relinearised_is_continuous_across_segments`).
+const PROJECTION_PANELS: usize = 100;
+
+/// One time segment of the re-linearised solution: constant-coefficient
+/// parameters and their modes, with amplitudes for the segment's start.
+struct Segment {
+    params: ThreeRegionParams,
+    modes: Vec<Eigenmode>,
+}
+
+impl Segment {
+    /// Temperature at radius `r` and time `t` since the segment's start.
+    fn temperature(&self, r: f64, t: f64) -> f64 {
+        three_region_temperature(r, t, &self.params, &self.modes)
+    }
+
+    /// Volume-weighted liquid average at time `t` since the segment's start.
+    fn liquid_average(&self, t: f64) -> f64 {
+        let p = &self.params;
+        if t <= 0.0 {
+            // Only a run's first segment is evaluated at its own start, where
+            // the series has Gibbs error and the start is known exactly.
+            return p.t_liquid_init;
+        }
+        let r_i = p.r_inner;
+        let sum: f64 = self
+            .modes
+            .iter()
+            .map(|m| {
+                let beta_1 = m.lambda / p.alpha_1.sqrt();
+                m.amplitude
+                    * m.coeff_a
+                    * integral_r_sin(beta_1, 0.0, r_i)
+                    * (-m.lambda * m.lambda * t).exp()
+            })
+            .sum();
+        p.t_ambient + 3.0 / (r_i * r_i * r_i) * sum
+    }
+}
+
+/// r·φ(r) of `mode` in `region` (0 liquid, 1 shell, 2 air): the
+/// eigenfunction without its 1/r, finite at r = 0.
+fn mode_times_r(mode: &Eigenmode, region: usize, r: f64, params: &ThreeRegionParams) -> f64 {
+    match region {
+        0 => mode.coeff_a * (mode.lambda / params.alpha_1.sqrt() * r).sin(),
+        1 => {
+            let beta_2 = mode.lambda / params.alpha_2.sqrt();
+            mode.coeff_b * (beta_2 * r).sin() + mode.coeff_c * (beta_2 * r).cos()
+        }
+        _ => {
+            let beta_3 = mode.lambda / params.alpha_3.sqrt();
+            mode.coeff_d
+                * (mode.gamma_den * (beta_3 * r).sin() + mode.gamma_num * (beta_3 * r).cos())
+        }
+    }
+}
+
+/// A temperature profile sampled on Simpson nodes, one panel set per region
+/// with the interfaces on panel edges, so each region's integrand is smooth.
+/// Each sample is stored premultiplied by its quadrature weight, the
+/// region's capacity k/α and r (the other r of the r² measure is in
+/// `mode_times_r`).
+struct SampledProfile {
+    radii: [Vec<f64>; 3],
+    weighted: [Vec<f64>; 3],
+}
+
+impl SampledProfile {
+    /// Sample `profile(region, r)` (°C) for the geometry of `params`. The
+    /// region index lets a discontinuous profile give each side of an
+    /// interface its own value.
+    fn sample(params: &ThreeRegionParams, profile: impl Fn(usize, f64) -> f64) -> Self {
+        let bounds = [
+            (0.0, params.r_inner, params.k_1 / params.alpha_1),
+            (params.r_inner, params.r_outer, params.k_2 / params.alpha_2),
+            (params.r_outer, params.r_max, params.k_3 / params.alpha_3),
+        ];
+        let n = 2 * PROJECTION_PANELS;
+        let region = |idx: usize| {
+            let (a, b, capacity) = bounds[idx];
+            let h = (b - a) / n as f64;
+            (0..=n)
+                .map(|j| {
+                    let r = a + j as f64 * h;
+                    let simpson = if j == 0 || j == n {
+                        1.0
+                    } else if j % 2 == 1 {
+                        4.0
+                    } else {
+                        2.0
+                    };
+                    let w = simpson * h / 3.0 * capacity * r;
+                    (r, w * (profile(idx, r) - params.t_ambient))
+                })
+                .unzip::<f64, f64, Vec<f64>, Vec<f64>>()
+        };
+        let [(r0, w0), (r1, w1), (r2, w2)] = [region(0), region(1), region(2)];
+        Self {
+            radii: [r0, r1, r2],
+            weighted: [w0, w1, w2],
+        }
+    }
+
+    /// Expansion amplitudes of this profile on `modes`: the capacity-weighted
+    /// inner product ⟨profile − T_amb, φ⟩ (the modes are normalised).
+    fn project(&self, params: &ThreeRegionParams, modes: &[Eigenmode]) -> Vec<f64> {
+        modes
+            .iter()
+            .map(|m| {
+                (0..3)
+                    .map(|region| {
+                        self.radii[region]
+                            .iter()
+                            .zip(&self.weighted[region])
+                            .map(|(&r, &s)| s * mode_times_r(m, region, r, params))
+                            .sum::<f64>()
+                    })
+                    .sum()
+            })
+            .collect()
+    }
+}
+
+/// Expansion amplitudes of `profile` (°C, by region and radius) on `modes`,
+/// by Simpson's rule with `PROJECTION_PANELS` panels per region.
+#[cfg(test)]
+fn project_profile(
+    params: &ThreeRegionParams,
+    modes: &[Eigenmode],
+    profile: impl Fn(usize, f64) -> f64,
+) -> Vec<f64> {
+    SampledProfile::sample(params, profile).project(params, modes)
+}
+
+/// The state a segment starts from: its liquid-average and outer-surface
+/// temperatures, and its profile. A run's first segment starts from the
+/// mug's uniform three-region state, whose amplitudes are closed-form
+/// (`compute_eigenmodes`); later segments start from the previous
+/// segment's end, projected onto their own modes.
+struct SegmentStart {
+    liquid_c: f64,
+    outer_c: f64,
+    profile: Option<SampledProfile>,
+}
+
+impl SegmentStart {
+    fn uniform(mug: &ThreeRegionMug) -> Self {
+        Self {
+            liquid_c: mug.liquid_temp_c,
+            outer_c: mug.shell_temp_c,
+            profile: None,
+        }
+    }
+
+    /// The end of `prev`, `len` seconds after its start.
+    fn after(prev: &Segment, len: f64) -> Self {
+        let p = &prev.params;
+        Self {
+            liquid_c: prev.liquid_average(len),
+            outer_c: prev.temperature(p.r_outer, len),
+            profile: Some(SampledProfile::sample(p, |_, r| prev.temperature(r, len))),
+        }
+    }
+
+    /// The segment from this start with the losses linearised at liquid
+    /// temperature `liquid_lin_c` and outer-surface temperature `outer_lin_c`.
+    fn solve(&self, mug: &ThreeRegionMug, liquid_lin_c: f64, outer_lin_c: f64) -> Segment {
+        let params = ThreeRegionParams::linearised(mug, liquid_lin_c, outer_lin_c);
+        let mut modes = compute_eigenmodes(&params);
+        if let Some(profile) = &self.profile {
+            let amplitudes = profile.project(&params, &modes);
+            for (m, a) in modes.iter_mut().zip(amplitudes) {
+                m.amplitude = a;
+            }
+        }
+        Segment { params, modes }
+    }
+
+    /// The segment of length `len` from this start, by the midpoint rule:
+    /// linearise at the start temperatures to predict the segment's end, then
+    /// re-solve linearised at the mean of start and predicted end.
+    fn solve_midpoint(&self, mug: &ThreeRegionMug, len: f64) -> Segment {
+        let predictor = self.solve(mug, self.liquid_c, self.outer_c);
+        let liquid_end = predictor.liquid_average(len);
+        let outer_end = predictor.temperature(mug.r_outer, len);
+        self.solve(
+            mug,
+            0.5 * (self.liquid_c + liquid_end),
+            0.5 * (self.outer_c + outer_end),
+        )
+    }
+}
+
+/// The `segments` equal segments of a `duration_s` run of `mug`, in order.
+fn solve_segments(mug: &ThreeRegionMug, segments: usize, duration_s: f64) -> Vec<Segment> {
+    let len = duration_s / segments as f64;
+    let mut solved: Vec<Segment> = Vec::with_capacity(segments);
+    for _ in 0..segments {
+        let start = match solved.last() {
+            None => SegmentStart::uniform(mug),
+            Some(prev) => SegmentStart::after(prev, len),
+        };
+        solved.push(start.solve_midpoint(mug, len));
+    }
+    solved
+}
+
+/// The segment holding run time `t` (of `count` segments of length `len`)
+/// and the time since that segment's start. A boundary time belongs to the
+/// segment it ends, so no evaluation lands on a projected series' own start.
+fn segment_at(t: f64, len: f64, count: usize) -> (usize, f64) {
+    let k = ((t / len).ceil() as usize).saturating_sub(1).min(count - 1);
+    (k, t - k as f64 * len)
+}
+
+/// Snapshots of a run made of `solved` equal segments spanning `duration_s`.
+fn segment_snapshots(
+    solved: &[Segment],
+    duration_s: f64,
+    num_snapshots: usize,
+    n_r: usize,
+    display_r_max: f64,
+) -> Vec<ThreeRegionSnapshot> {
+    let len = duration_s / solved.len() as f64;
+    (0..num_snapshots)
+        .map(|i| {
+            let t = i as f64 / (num_snapshots - 1).max(1) as f64 * duration_s;
+            let (k, local_t) = segment_at(t, len, solved.len());
+            let seg = &solved[k];
+            let mut snap =
+                three_region_snapshot(local_t, &seg.params, &seg.modes, n_r, display_r_max);
+            snap.time_s = t;
+            snap
+        })
+        .collect()
+}
+
+/// Simulate `mug` with the heat-equation analytical solver. The run is cut
+/// into `segments` equal segments (at least one); each is solved exactly by
+/// eigenfunction expansion with its open-top loss and outer radiation
+/// linearised by the midpoint rule for that segment, starting from the
+/// previous segment's end profile. Snapshots are evenly spaced over
+/// `duration_s` on `n_r` radii; `display_r_max` extends the radial grid for
+/// chart display.
+pub fn simulate_three_region_relinearised(
+    mug: &ThreeRegionMug,
+    segments: usize,
+    duration_s: f64,
+    num_snapshots: usize,
+    n_r: usize,
+    display_r_max: f64,
+) -> Vec<ThreeRegionSnapshot> {
+    let solved = solve_segments(mug, segments.max(1), duration_s);
+    segment_snapshots(&solved, duration_s, num_snapshots, n_r, display_r_max)
+}
+
+/// Closed-form liquid average of `simulate_three_region_relinearised` at
+/// `num_points` evenly spaced times, free of the radial grid.
+#[cfg(test)]
+pub(crate) fn relinearised_liquid_average(
+    mug: &ThreeRegionMug,
+    segments: usize,
+    duration_s: f64,
+    num_points: usize,
+) -> Vec<(f64, f64)> {
+    let solved = solve_segments(mug, segments.max(1), duration_s);
+    let len = duration_s / solved.len() as f64;
+    (0..num_points)
+        .map(|i| {
+            let t = i as f64 / (num_points - 1).max(1) as f64 * duration_s;
+            let (k, local_t) = segment_at(t, len, solved.len());
+            (t, solved[k].liquid_average(local_t))
         })
         .collect()
 }
@@ -725,575 +1215,413 @@ pub(crate) fn three_region_liquid_average_closed_form(
         .collect()
 }
 
-// ─── Single-region exposed-liquid sphere solver ───────────────────
-//
-// Models the exposed (lid-open) portion of the coffee as a sphere of
-// liquid with Robin BC at r = R:
-//
-//   -k ∂T/∂r = h_eff (T - T_ambient)
-//
-// Eigenvalues βₙ satisfy:  (1 - Bi) sin(βR) - βR cos(βR) = 0
-// where Bi = h_eff · R / k.
-//
-// Eigenfunctions: φₙ(r) = sin(βₙ r) / r   (regular at r = 0)
-
-/// Parameters for the single-region exposed-liquid sphere model
-#[derive(Debug, Clone, PartialEq)]
-pub struct ExposedLiquidParams {
-    /// Liquid sphere radius (m) — same as r_inner of the mug
-    pub radius: f64,
-    /// Liquid thermal diffusivity (m²/s)
-    pub alpha: f64,
-    /// Liquid thermal conductivity W/(m·K)
-    pub k: f64,
-    /// Effective heat transfer coefficient at surface W/(m²·K)
-    /// Includes convection + radiation + evaporation
-    pub h_eff: f64,
-    /// Initial liquid temperature (°C)
-    pub t_init: f64,
-    /// Ambient temperature (°C)
-    pub t_ambient: f64,
-}
-
-/// Transcendental equation for exposed-sphere eigenvalues:
-///   f(βR) = (1 - Bi) sin(βR) - βR cos(βR) = 0
-fn exposed_eigenvalue_equation(beta_r: f64, biot: f64) -> f64 {
-    (1.0 - biot) * beta_r.sin() - beta_r * beta_r.cos()
-}
-
-/// Find eigenvalues βₙ for the exposed-liquid sphere.
-///
-/// Roots of: (1 - Bi) sin(βR) - βR cos(βR) = 0
-/// For large n, roots approach βₙR ≈ nπ.
-fn find_exposed_eigenvalues(params: &ExposedLiquidParams, num_modes: usize) -> Vec<f64> {
-    let r = params.radius;
-    let biot = params.h_eff * r / params.k;
-
-    let mut betas = Vec::with_capacity(num_modes);
-
-    // Scan βR from a small value up to (num_modes + 2) * π
-    // Roots are near nπ for large n, but the first root can be shifted significantly by Bi
-    let br_max = (num_modes as f64 + 2.0) * PI;
-    let num_search = num_modes * 200;
-    let d_br = br_max / num_search as f64;
-
-    let br_start = 0.01; // skip βR = 0 (trivial)
-    let mut prev_br = br_start;
-    let mut prev_f = exposed_eigenvalue_equation(prev_br, biot);
-
-    for i in 1..=num_search {
-        let br = br_start + i as f64 * d_br;
-        let f = exposed_eigenvalue_equation(br, biot);
-
-        if prev_f.is_finite() && f.is_finite() && prev_f * f < 0.0 {
-            // Bisect to refine
-            let mut a = prev_br;
-            let mut b = br;
-            let mut fa = prev_f;
-            for _ in 0..50 {
-                let mid = (a + b) / 2.0;
-                if (b - a) < 1e-12 {
-                    break;
-                }
-                let fm = exposed_eigenvalue_equation(mid, biot);
-                if fa * fm < 0.0 {
-                    b = mid;
-                } else {
-                    a = mid;
-                    fa = fm;
-                }
-            }
-            let br_root = (a + b) / 2.0;
-            let beta = br_root / r;
-
-            // Avoid duplicates
-            let is_new = betas.last().is_none_or(|&last: &f64| (beta - last).abs() > 0.01 / r);
-            if is_new {
-                betas.push(beta);
-                if betas.len() >= num_modes {
-                    break;
-                }
-            }
-        }
-
-        prev_br = br;
-        prev_f = f;
-    }
-
-    betas
-}
-
-/// Compute the volume-average temperature of the exposed liquid sphere over time.
-///
-/// Closed-form:
-///   T_avg(t) = T_amb + Σₙ Cₙ exp(-α βₙ² t)
-///
-/// where Cₙ = 3(T₀ - T_amb) Iₙ² / (R³ Nₙ)
-///   Iₙ = ∫₀ᴿ r sin(βₙr) dr   (volume projection integral)
-///   Nₙ = ∫₀ᴿ sin²(βₙr) dr    (norm of eigenfunction)
-pub fn exposed_liquid_average(
-    params: &ExposedLiquidParams,
-    num_modes: usize,
-    duration_s: f64,
-    num_points: usize,
-) -> Vec<(f64, f64)> {
-    let r = params.radius;
-    let r3 = r * r * r;
-    let dt = params.t_init - params.t_ambient;
-
-    let betas = find_exposed_eigenvalues(params, num_modes);
-
-    // Pre-compute mode coefficients
-    // Volume integral: ∫₀ᴿ r² (sin(βr)/r) dr = ∫₀ᴿ r sin(βr) dr = Iₙ
-    // Norm: ∫₀ᴿ (sin(βr))² dr = Nₙ  (weight is just 1 since single region)
-    // Amplitude of uniform IC: aₙ = dt · Iₙ / Nₙ
-    // Volume average contribution: (3/R³) aₙ Iₙ = (3/R³) dt Iₙ² / Nₙ
-    let mode_coeffs: Vec<(f64, f64)> = betas
-        .iter()
-        .map(|&beta| {
-            let i_n = integral_r_sin(beta, 0.0, r);
-            let n_n = integral_sin2(beta, 0.0, r);
-            let c_n = if n_n.abs() > 1e-30 {
-                3.0 * dt * i_n * i_n / (r3 * n_n)
-            } else {
-                0.0
-            };
-            (c_n, beta)
-        })
-        .collect();
-
-    (0..num_points)
-        .map(|i| {
-            let t = i as f64 / (num_points - 1).max(1) as f64 * duration_s;
-            if t <= 0.0 {
-                return (t, params.t_init);
-            }
-            let sum: f64 = mode_coeffs
-                .iter()
-                .map(|&(c_n, beta)| c_n * (-params.alpha * beta * beta * t).exp())
-                .sum();
-            (t, params.t_ambient + sum)
-        })
-        .collect()
-}
-
-/// Compute effective heat-transfer coefficient for the exposed coffee surface.
-///
-/// Includes: convection + radiation from water surface + linearized evaporation.
-/// This is used by the single-region exposed-sphere analytical model.
-pub fn compute_exposed_h_eff(liquid_temp: f64, room_temp: f64, h_conv: f64) -> f64 {
-    let sigma: f64 = 5.670_374e-8;
-    let water_emissivity: f64 = 0.96;
-
-    // 1. Convection at the exposed liquid surface
-    let h_convection = h_conv;
-
-    // 2. Radiation from water surface: h_rad = 4 * epsilon * sigma * T_m^3
-    let t_avg_k = 0.5 * (liquid_temp + room_temp) + 273.15;
-    let h_rad_water = 4.0 * water_emissivity * sigma * t_avg_k.powi(3);
-
-    // 3. Linearized evaporation: h_evap = eta * h_mass * L_v * (rho_v,s - rho_v,a) / dT
-    let rho_air: f64 = 1.18;
-    let cp_air: f64 = 1005.0;
-    let latent_heat: f64 = 2.26e6;
-    let r_vapor: f64 = 461.5;
-    let rh: f64 = 0.50;
-    let evap_enh: f64 = 2.5;
-
-    let h_mass = h_conv / (rho_air * cp_air);
-    let t_liq_k = liquid_temp + 273.15;
-    let t_room_k = room_temp + 273.15;
-    let p_sat_liq = 610.78 * (17.27 * liquid_temp / (liquid_temp + 237.3)).exp();
-    let p_sat_room = 610.78 * (17.27 * room_temp / (room_temp + 237.3)).exp();
-    let rho_v_surface = p_sat_liq / (r_vapor * t_liq_k);
-    let rho_v_ambient = rh * p_sat_room / (r_vapor * t_room_k);
-
-    let delta_t = liquid_temp - room_temp;
-    let h_evap = if rho_v_surface > rho_v_ambient && delta_t > 1.0 {
-        evap_enh * h_mass * latent_heat * (rho_v_surface - rho_v_ambient) / delta_t
-    } else {
-        0.0
-    };
-
-    h_convection + h_rad_water + h_evap
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::constants::{CELSIUS_TO_KELVIN, STEFAN_BOLTZMANN};
     use super::*;
 
     #[test]
     fn test_finds_eigenvalues() {
         let params = ThreeRegionParams::default();
         let eigenvalues = find_eigenvalues(&params, 10);
-        assert!(eigenvalues.len() >= 5, "Should find at least 5 eigenvalues, got {}", eigenvalues.len());
+        assert!(
+            eigenvalues.len() >= 5,
+            "Should find at least 5 eigenvalues, got {}",
+            eigenvalues.len()
+        );
         // Eigenvalues should be positive and increasing
         for i in 1..eigenvalues.len() {
-            assert!(eigenvalues[i] > eigenvalues[i-1], "Eigenvalues should be increasing");
+            assert!(
+                eigenvalues[i] > eigenvalues[i - 1],
+                "Eigenvalues should be increasing"
+            );
         }
+    }
+
+    /// Evaluate a stored mode's eigenfunction at `r`.
+    fn phi(mode: &Eigenmode, r: f64, params: &ThreeRegionParams) -> f64 {
+        eigenfunction_at_r(
+            r,
+            mode.lambda,
+            mode.coeff_a,
+            mode.coeff_b,
+            mode.coeff_c,
+            mode.coeff_d,
+            mode.gamma_num,
+            mode.gamma_den,
+            params,
+        )
+    }
+
+    /// Initial deviation from ambient in region 0 (liquid), 1 (shell) or 2 (air).
+    fn initial_deviation(region: usize, params: &ThreeRegionParams) -> f64 {
+        match region {
+            0 => params.t_liquid_init - params.t_ambient,
+            1 => params.t_shell_init - params.t_ambient,
+            _ => 0.0,
+        }
+    }
+
+    /// Weighted integral ∫₀^{r_max} (k/α)·r²·g(region, r) dr.
+    ///
+    /// Composite Simpson within each region, so the weight's and the initial
+    /// condition's jumps at r_inner and r_outer fall on panel edges and the
+    /// integrand is smooth inside every panel.
+    fn weighted_integral(params: &ThreeRegionParams, g: impl Fn(usize, f64) -> f64) -> f64 {
+        const INTERVALS: usize = 2000;
+        let regions = [
+            (0.0, params.r_inner, params.k_1 / params.alpha_1),
+            (params.r_inner, params.r_outer, params.k_2 / params.alpha_2),
+            (params.r_outer, params.r_max, params.k_3 / params.alpha_3),
+        ];
+        regions
+            .iter()
+            .enumerate()
+            .map(|(region, &(a, b, weight))| {
+                let h = (b - a) / INTERVALS as f64;
+                let sum: f64 = (0..=INTERVALS)
+                    .map(|i| {
+                        let r = a + i as f64 * h;
+                        let simpson = if i == 0 || i == INTERVALS {
+                            1.0
+                        } else if i % 2 == 1 {
+                            4.0
+                        } else {
+                            2.0
+                        };
+                        simpson * r * r * g(region, r)
+                    })
+                    .sum();
+                weight * sum * h / 3.0
+            })
+            .sum()
+    }
+
+    /// ‖f‖²_w of the initial deviation from ambient.
+    fn initial_norm_squared(params: &ThreeRegionParams) -> f64 {
+        weighted_integral(params, |region, _| {
+            initial_deviation(region, params).powi(2)
+        })
     }
 
     #[test]
     fn test_eigenfunction_orthonormality() {
         let params = ThreeRegionParams::default();
         let modes = compute_eigenmodes(&params);
-        let num_points = 1000;
-        let dr = params.r_max / (num_points - 1) as f64;
+        let n = 10.min(modes.len());
 
-        println!("Testing eigenfunction orthonormality (should be Kronecker delta):");
-
-        // Test <φ_i, φ_j> for first few modes
-        for i in 0..5.min(modes.len()) {
-            for j in i..5.min(modes.len()) {
-                let mut inner_prod = 0.0;
-                for k in 0..num_points {
-                    let r = k as f64 * dr + 1e-10;
-                    let phi_i = eigenfunction_at_r(r, modes[i].lambda, modes[i].coeff_a,
-                        modes[i].coeff_b, modes[i].coeff_c, modes[i].coeff_d, modes[i].gamma_num, modes[i].gamma_den, &params);
-                    let phi_j = eigenfunction_at_r(r, modes[j].lambda, modes[j].coeff_a,
-                        modes[j].coeff_b, modes[j].coeff_c, modes[j].coeff_d, modes[j].gamma_num, modes[j].gamma_den, &params);
-                    let rho_c = thermal_capacity_weight(r, &params);
-                    let trap_weight = if k == 0 || k == num_points - 1 { 0.5 } else { 1.0 };
-                    inner_prod += trap_weight * rho_c * r * r * phi_i * phi_j * dr;
-                }
+        for i in 0..n {
+            for j in i..n {
+                let inner = weighted_integral(&params, |_, r| {
+                    phi(&modes[i], r, &params) * phi(&modes[j], r, &params)
+                });
                 let expected = if i == j { 1.0 } else { 0.0 };
-                println!("  <φ_{}, φ_{}> = {:.4} (expected {})", i+1, j+1, inner_prod, expected);
+                assert!(
+                    (inner - expected).abs() < 1e-6,
+                    "<φ_{}, φ_{}>_w = {inner:.3e}, expected {expected}",
+                    i + 1,
+                    j + 1
+                );
             }
         }
 
-        // Also check amplitude calculation for mode 1
-        let mode = &modes[0];
-        let mut amplitude_check = 0.0;
-        for k in 0..num_points {
-            let r = k as f64 * dr + 1e-10;
-            let phi = eigenfunction_at_r(r, mode.lambda, mode.coeff_a,
-                mode.coeff_b, mode.coeff_c, mode.coeff_d, mode.gamma_num, mode.gamma_den, &params);
-            let rho_c = thermal_capacity_weight(r, &params);
-            let t_init = if r <= params.r_inner {
-                params.t_liquid_init - params.t_ambient
-            } else if r <= params.r_outer {
-                params.t_shell_init - params.t_ambient
-            } else {
-                0.0
-            };
-            let trap_weight = if k == 0 || k == num_points - 1 { 0.5 } else { 1.0 };
-            amplitude_check += trap_weight * rho_c * r * r * t_init * phi * dr;
+        // The stored amplitude is the projection <f, φ>_w of the initial condition.
+        for mode in modes.iter().take(n) {
+            let projection = weighted_integral(&params, |region, r| {
+                initial_deviation(region, &params) * phi(mode, r, &params)
+            });
+            assert!(
+                (projection - mode.amplitude).abs() < 1e-6 * mode.amplitude.abs().max(1.0),
+                "λ={:.6}: stored amplitude {:.6} != projection {projection:.6}",
+                mode.lambda,
+                mode.amplitude
+            );
         }
-        println!("\nAmplitude check for mode 1:");
-        println!("  Stored amplitude: {:.4}", mode.amplitude);
-        println!("  Recomputed: {:.4}", amplitude_check);
     }
 
     #[test]
     fn test_parseval_identity() {
-        // Check if Σ|a_n|² ≈ ||f||²
-        // This verifies the eigenfunction expansion captures the total "energy"
-        let mut params = ThreeRegionParams::default();
-        params.num_modes = 100;
+        // With orthonormal modes Σ a_n² approaches ‖f‖²_w: the expansion
+        // captures the whole initial condition.
+        let params = ThreeRegionParams {
+            num_modes: 100,
+            ..Default::default()
+        };
         let modes = compute_eigenmodes(&params);
-        let num_points = 2000;
-        let dr = params.r_max / (num_points - 1) as f64;
+        assert_eq!(modes.len(), 100);
 
-        // Compute ||f||² where f(r) = T_init(r) - T_ambient
-        let mut f_norm_sq = 0.0;
-        for k in 0..num_points {
-            let r = k as f64 * dr + 1e-10;
-            let rho_c = thermal_capacity_weight(r, &params);
-            let f = if r <= params.r_inner {
-                params.t_liquid_init - params.t_ambient
-            } else if r <= params.r_outer {
-                params.t_shell_init - params.t_ambient
-            } else {
-                0.0
-            };
-            let trap_weight = if k == 0 || k == num_points - 1 { 0.5 } else { 1.0 };
-            f_norm_sq += trap_weight * rho_c * r * r * f * f * dr;
-        }
-
-        // Compute Σ|a_n|²
+        let f_norm_sq = initial_norm_squared(&params);
         let sum_amp_sq: f64 = modes.iter().map(|m| m.amplitude * m.amplitude).sum();
-
-        println!("Parseval identity check:");
-        println!("  ||f||² = {:.4}", f_norm_sq);
-        println!("  Σ|a_n|² = {:.4} ({} modes)", sum_amp_sq, modes.len());
-        println!("  Ratio: {:.2}%", sum_amp_sq / f_norm_sq * 100.0);
-
-        // Break down by region
-        let mut liquid_contrib = 0.0;
-        let mut shell_contrib = 0.0;
-        for k in 0..num_points {
-            let r = k as f64 * dr + 1e-10;
-            let rho_c = thermal_capacity_weight(r, &params);
-            let f = if r <= params.r_inner {
-                params.t_liquid_init - params.t_ambient
-            } else if r <= params.r_outer {
-                params.t_shell_init - params.t_ambient
-            } else {
-                0.0
-            };
-            let trap_weight = if k == 0 || k == num_points - 1 { 0.5 } else { 1.0 };
-            if r <= params.r_inner {
-                liquid_contrib += trap_weight * rho_c * r * r * f * f * dr;
-            } else if r <= params.r_outer {
-                shell_contrib += trap_weight * rho_c * r * r * f * f * dr;
-            }
-        }
-        println!("\nNorm breakdown:");
-        println!("  Liquid region: {:.4} ({:.1}%)", liquid_contrib, liquid_contrib / f_norm_sq * 100.0);
-        println!("  Shell region: {:.4} ({:.1}%)", shell_contrib, shell_contrib / f_norm_sq * 100.0);
-
-        // If Parseval is satisfied (>90%), the expansion is working
-        // The issue would then be pointwise convergence (Gibbs phenomenon)
-        let coverage = sum_amp_sq / f_norm_sq * 100.0;
-        println!("\nParseval coverage: {:.1}%", coverage);
-        if coverage < 50.0 {
-            println!("WARNING: Poor Parseval coverage - eigenfunctions may be incomplete");
-        }
+        let ratio = sum_amp_sq / f_norm_sq;
+        assert!(
+            (ratio - 1.0).abs() < 0.02,
+            "Σa_n² = {sum_amp_sq:.1} is {:.2}% of ‖f‖² = {f_norm_sq:.1}",
+            ratio * 100.0
+        );
     }
 
     #[test]
     fn test_high_frequency_eigenvalues() {
-        // Test amplitude behavior at high frequencies
-        // For step functions, coefficients should decay as ~1/n
-        let mut params = ThreeRegionParams::default();
-        params.num_modes = 500; // Many more modes
-
-        println!("Computing 500 modes...");
+        // The initial condition is a step function, so its coefficients decay
+        // like 1/n: |a_n|·n stays within a bounded band at high n, and the
+        // partial sums of a_n² never exceed ‖f‖² (Bessel's inequality).
+        let params = ThreeRegionParams {
+            num_modes: 500,
+            ..Default::default()
+        };
         let modes = compute_eigenmodes(&params);
-        println!("Found {} modes", modes.len());
+        assert_eq!(modes.len(), 500);
 
-        // Track cumulative amplitude squared
-        let _cumsum_amp_sq = 0.0;
-        let num_points = 2000;
-        let dr = params.r_max / (num_points - 1) as f64;
+        let f_norm_sq = initial_norm_squared(&params);
+        let total: f64 = modes.iter().map(|m| m.amplitude * m.amplitude).sum();
+        assert!(
+            total <= f_norm_sq * (1.0 + 1e-6),
+            "Bessel's inequality violated: Σa_n² = {total:.3} > ‖f‖² = {f_norm_sq:.3}"
+        );
 
-        // Compute ||f||²
-        let mut f_norm_sq = 0.0;
-        for k in 0..num_points {
-            let r = k as f64 * dr + 1e-10;
-            let rho_c = thermal_capacity_weight(r, &params);
-            let f = if r <= params.r_inner {
-                params.t_liquid_init - params.t_ambient
-            } else if r <= params.r_outer {
-                params.t_shell_init - params.t_ambient
-            } else {
-                0.0
-            };
-            let trap_weight = if k == 0 || k == num_points - 1 { 0.5 } else { 1.0 };
-            f_norm_sq += trap_weight * rho_c * r * r * f * f * dr;
-        }
-
-        println!("\nParseval convergence with number of modes:");
-        for milestone in [10, 25, 50, 100, 200, 300, 400, 500] {
-            if milestone <= modes.len() {
-                let partial_sum: f64 = modes.iter().take(milestone).map(|m| m.amplitude * m.amplitude).sum();
-                let coverage = partial_sum / f_norm_sq * 100.0;
-                println!("  {} modes: Σ|a_n|² = {:.1}, coverage = {:.1}%", milestone, partial_sum, coverage);
-            }
-        }
-
-        // Print a sample of amplitudes to see decay rate
-        println!("\nAmplitude decay pattern:");
-        for n in [1, 10, 50, 100, 200, 300, 400, 500] {
-            if n <= modes.len() {
-                let mode = &modes[n-1];
-                println!("  Mode {:3}: λ={:.3}, |a|={:.3}, τ={:.3}s",
-                    n, mode.lambda, mode.amplitude.abs(), 1.0/(mode.lambda*mode.lambda));
-            }
-        }
+        // Mode families from the three regions interleave, so |a_n| beats
+        // and passes near zero every ~16 modes; the 1/n law holds for its
+        // envelope. Take the envelope as the maximum of |a_n| over 32-mode
+        // blocks and fit its log-log slope against the block's central n:
+        // 1/n decay gives −1, 1/n² gives −2, no decay gives 0.
+        let points: Vec<(f64, f64)> = (100..500)
+            .collect::<Vec<usize>>()
+            .chunks(32)
+            .map(|block| {
+                let n_mid = 0.5 * (block[0] + block[block.len() - 1]) as f64;
+                let envelope = block
+                    .iter()
+                    .map(|&n| modes[n - 1].amplitude.abs())
+                    .fold(0.0, f64::max);
+                (n_mid.ln(), envelope.ln())
+            })
+            .collect();
+        let count = points.len() as f64;
+        let mean_x = points.iter().map(|p| p.0).sum::<f64>() / count;
+        let mean_y = points.iter().map(|p| p.1).sum::<f64>() / count;
+        let slope = points
+            .iter()
+            .map(|(x, y)| (x - mean_x) * (y - mean_y))
+            .sum::<f64>()
+            / points
+                .iter()
+                .map(|(x, _)| (x - mean_x).powi(2))
+                .sum::<f64>();
+        assert!(
+            (-1.3..=-0.7).contains(&slope),
+            "envelope of |a_n| over n=100..500 decays as n^{slope:.2}; expected n^-1"
+        );
     }
 
     #[test]
     fn test_eigenvalue_scale() {
+        // With h_conv = 0 the slowest mode is the liquid and shell losing heat
+        // by conduction through the air shell to r_max. Its decay time is the
+        // lumped estimate C/G: C the liquid + shell heat capacity, G the
+        // conductance 4πk₃/(1/r_outer − 1/r_max) of a spherical air shell.
         let params = ThreeRegionParams::default();
-
-        // First, let's scan the determinant to see where it changes sign
-        let lambda_fundamental = PI * params.alpha_1.sqrt() / params.r_inner;
-        println!("Expected fundamental eigenvalue: {:.6}", lambda_fundamental);
-        println!("Expected decay time: {:.1}s", 1.0 / (lambda_fundamental * lambda_fundamental));
-
-        println!("\nDeterminant scan:");
-        let test_lambdas = [0.001, 0.005, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1, 0.15, 0.2];
-        for &lam in &test_lambdas {
-            let det = interface_determinant(lam, &params);
-            println!("  det({:.4}) = {:.6e}", lam, det);
-        }
-
         let eigenvalues = find_eigenvalues(&params, 15);
+        assert_eq!(eigenvalues.len(), 15);
 
-        // The fundamental eigenvalue should give a decay time of ~300-500 seconds
-        // tau = 1/lambda^2
-        if !eigenvalues.is_empty() {
-            let tau_1 = 1.0 / (eigenvalues[0] * eigenvalues[0]);
-            println!("\nFound {} eigenvalues", eigenvalues.len());
-            println!("tau_1 = {:.1}s, lambda_1 = {:.6}", tau_1, eigenvalues[0]);
+        let volume = |a: f64, b: f64| 4.0 / 3.0 * PI * (b.powi(3) - a.powi(3));
+        let capacity = params.k_1 / params.alpha_1 * volume(0.0, params.r_inner)
+            + params.k_2 / params.alpha_2 * volume(params.r_inner, params.r_outer);
+        let conductance = 4.0 * PI * params.k_3 / (1.0 / params.r_outer - 1.0 / params.r_max);
+        let tau_lumped = capacity / conductance;
+        let tau_1 = 1.0 / eigenvalues[0].powi(2);
+        assert!(
+            (tau_1 / tau_lumped - 1.0).abs() < 0.05,
+            "τ₁ = {tau_1:.0} s, lumped C/G = {tau_lumped:.0} s"
+        );
 
-            // Relaxed assertion - just print for now
-            if tau_1 < 100.0 || tau_1 > 2000.0 {
-                println!("WARNING: Decay time outside expected range 100-2000s");
-            }
-        }
-
-        // Print eigenvalues for diagnosis
-        println!("\nFound {} eigenvalues:", eigenvalues.len());
-        for (i, &ev) in eigenvalues.iter().take(8).enumerate() {
-            let tau = 1.0 / (ev * ev);
-            println!("  lambda_{} = {:.6}, tau = {:.1}s", i+1, ev, tau);
+        // Every eigenvalue is a root: the determinant changes sign across it.
+        for &lambda in &eigenvalues {
+            let eps = 1e-7 * lambda;
+            let below = interface_determinant(lambda - eps, &params);
+            let above = interface_determinant(lambda + eps, &params);
+            assert!(
+                below * above < 0.0,
+                "det does not change sign across λ={lambda:.6}: {below:.3e}, {above:.3e}"
+            );
         }
     }
 
     #[test]
     fn test_dense_eigenvalue_scan() {
-        // Scan very densely for sign changes to find ALL eigenvalues
+        // A scan far denser than find_eigenvalues' own search brackets every
+        // eigenvalue it returns, and finds no root it skipped.
         let params = ThreeRegionParams::default();
+        let eigenvalues = find_eigenvalues(&params, params.num_modes);
+        let last = *eigenvalues.last().unwrap();
 
-        // Fundamental scales for each region
-        let lambda_water = PI * params.alpha_1.sqrt() / params.r_inner;
-        let lambda_ceramic = PI * params.alpha_2.sqrt() / (params.r_outer - params.r_inner);
-        let lambda_air = PI * params.alpha_3.sqrt() / (params.r_max - params.r_outer);
-
-        println!("Characteristic eigenvalues for each region:");
-        println!("  Water (liquid): λ ~ {:.4}, τ ~ {:.1}s", lambda_water, 1.0/(lambda_water*lambda_water));
-        println!("  Ceramic (shell): λ ~ {:.4}, τ ~ {:.1}s", lambda_ceramic, 1.0/(lambda_ceramic*lambda_ceramic));
-        println!("  Air: λ ~ {:.4}, τ ~ {:.3}s", lambda_air, 1.0/(lambda_air*lambda_air));
-
-        // Very dense scan
         let lambda_min = 0.001;
-        let lambda_max = 5.0;
-        let num_points = 50000;
-        let d_lambda = (lambda_max - lambda_min) / num_points as f64;
+        let num_points = 50_000;
+        let d_lambda = (last * 1.001 - lambda_min) / num_points as f64;
 
         let mut sign_changes = Vec::new();
         let mut prev_det = interface_determinant(lambda_min, &params);
-
         for i in 1..=num_points {
             let lambda = lambda_min + i as f64 * d_lambda;
             let det = interface_determinant(lambda, &params);
-
             if prev_det.is_finite() && det.is_finite() && prev_det * det < 0.0 {
-                sign_changes.push((lambda - d_lambda/2.0, prev_det, det));
+                sign_changes.push(lambda - d_lambda / 2.0);
             }
             prev_det = det;
         }
 
-        println!("\nFound {} sign changes (potential eigenvalues) in [0.001, 5.0]:", sign_changes.len());
-        for (i, &(lambda, _prev, _cur)) in sign_changes.iter().take(20).enumerate() {
-            let tau = 1.0 / (lambda * lambda);
-            println!("  #{}: λ ≈ {:.4}, τ ≈ {:.2}s", i+1, lambda, tau);
+        assert_eq!(
+            sign_changes.len(),
+            eigenvalues.len(),
+            "dense scan found {} roots up to λ={last:.4}, find_eigenvalues {}",
+            sign_changes.len(),
+            eigenvalues.len()
+        );
+        for (&scanned, &found) in sign_changes.iter().zip(&eigenvalues) {
+            assert!(
+                (scanned - found).abs() <= d_lambda,
+                "dense-scan root λ≈{scanned:.5} does not match find_eigenvalues' λ={found:.5}"
+            );
         }
-        if sign_changes.len() > 20 {
-            println!("  ... and {} more", sign_changes.len() - 20);
-        }
-
-        // How many are below λ = 0.5 (slow modes)?
-        let slow_modes = sign_changes.iter().filter(|(l, _, _)| *l < 0.5).count();
-        println!("\nModes with τ > 4s (λ < 0.5): {}", slow_modes);
     }
 
     #[test]
     fn test_eigenfunction_interface_conditions() {
+        // compute_coefficients builds every λ's eigenfunction to satisfy
+        // temperature and flux continuity at r_inner and temperature
+        // continuity at r_outer, so those three are construction checks.
+        // The energy balance at r_outer, k₂T₂′ + h_conv·T = k₃T₃′, holds only
+        // at an eigenvalue: it holds at each one found, and fails midway
+        // between two.
         let params = ThreeRegionParams::default();
         let eigenvalues = find_eigenvalues(&params, 5);
 
-        println!("Checking interface conditions for first eigenvalue:");
-        let lambda = eigenvalues[0];
-        let (a, b, c, d, gn, gd) = compute_coefficients(lambda, &params);
-
         let r_i = params.r_inner;
         let r_o = params.r_outer;
+        // (T₁, T₂) and (k₁T₁′, k₂T₂′) at r_inner; (T₂, T₃) and
+        // (k₂T₂′ + h_conv·T₂, k₃T₃′) at r_outer, for λ's coefficients.
+        let interface_pairs = |lambda: f64| -> [(f64, f64); 4] {
+            let (a, b, c, d, gn, gd) = compute_coefficients(lambda, &params);
+            let beta_1 = lambda / params.alpha_1.sqrt();
+            let beta_2 = lambda / params.alpha_2.sqrt();
+            let beta_3 = lambda / params.alpha_3.sqrt();
 
-        let beta_1 = lambda / params.alpha_1.sqrt();
-        let beta_2 = lambda / params.alpha_2.sqrt();
-        let beta_3 = lambda / params.alpha_3.sqrt();
+            let u1_ri = a * (beta_1 * r_i).sin();
+            let u2_ri = b * (beta_2 * r_i).sin() + c * (beta_2 * r_i).cos();
+            let u2_ro = b * (beta_2 * r_o).sin() + c * (beta_2 * r_o).cos();
+            let u3_ro = d * (gd * (beta_3 * r_o).sin() + gn * (beta_3 * r_o).cos());
 
-        // Temperature at r_i from both sides
-        let u1_ri = a * (beta_1 * r_i).sin();
-        let u2_ri = b * (beta_2 * r_i).sin() + c * (beta_2 * r_i).cos();
-        let t1_ri = u1_ri / r_i;
-        let t2_ri = u2_ri / r_i;
-        println!("  At r_i: T1={:.6}, T2={:.6}, diff={:.6}", t1_ri, t2_ri, (t1_ri - t2_ri).abs());
+            // dT/dr = (r·du/dr − u)/r²
+            let du1_ri = a * beta_1 * (beta_1 * r_i).cos();
+            let du2_ri = b * beta_2 * (beta_2 * r_i).cos() - c * beta_2 * (beta_2 * r_i).sin();
+            let du2_ro = b * beta_2 * (beta_2 * r_o).cos() - c * beta_2 * (beta_2 * r_o).sin();
+            let du3_ro = d * beta_3 * (gd * (beta_3 * r_o).cos() - gn * (beta_3 * r_o).sin());
+            let grad = |r: f64, u: f64, du: f64| (r * du - u) / (r * r);
 
-        // Temperature at r_o from both sides (pole-free form for region 3)
-        let u2_ro = b * (beta_2 * r_o).sin() + c * (beta_2 * r_o).cos();
-        let u3_ro = d * (gd * (beta_3 * r_o).sin() + gn * (beta_3 * r_o).cos());
-        let t2_ro = u2_ro / r_o;
-        let t3_ro = u3_ro / r_o;
-        println!("  At r_o: T2={:.6}, T3={:.6}, diff={:.6}", t2_ro, t3_ro, (t2_ro - t3_ro).abs());
+            [
+                (u1_ri / r_i, u2_ri / r_i),
+                (
+                    params.k_1 * grad(r_i, u1_ri, du1_ri),
+                    params.k_2 * grad(r_i, u2_ri, du2_ri),
+                ),
+                (u2_ro / r_o, u3_ro / r_o),
+                (
+                    params.k_2 * grad(r_o, u2_ro, du2_ro) + params.h_conv * u2_ro / r_o,
+                    params.k_3 * grad(r_o, u3_ro, du3_ro),
+                ),
+            ]
+        };
+        let rel_diff = |(x, y): (f64, f64)| (x - y).abs() / x.abs().max(y.abs()).max(1e-12);
+        let names = ["T at r_inner", "flux at r_inner", "T at r_outer"];
 
-        // Flux at r_i
-        // dT/dr = (r*du/dr - u) / r^2
-        let du1_ri = a * beta_1 * (beta_1 * r_i).cos();
-        let du2_ri = b * beta_2 * (beta_2 * r_i).cos() - c * beta_2 * (beta_2 * r_i).sin();
-        let flux1_ri = params.k_1 * (r_i * du1_ri - u1_ri) / (r_i * r_i);
-        let flux2_ri = params.k_2 * (r_i * du2_ri - u2_ri) / (r_i * r_i);
-        println!("  Flux at r_i: k1*dT1/dr={:.6}, k2*dT2/dr={:.6}, diff={:.6}",
-            flux1_ri, flux2_ri, (flux1_ri - flux2_ri).abs());
-
-        println!("\nCoefficients: A={:.4}, B={:.4}, C={:.4}, D={:.4}, gn={:.4}, gd={:.4}", a, b, c, d, gn, gd);
-        println!("Wave numbers: beta1={:.2}, beta2={:.2}, beta3={:.2}", beta_1, beta_2, beta_3);
+        for &lambda in &eigenvalues {
+            let pairs = interface_pairs(lambda);
+            for (&pair, name) in pairs.iter().zip(names) {
+                assert!(
+                    rel_diff(pair) < 1e-9,
+                    "λ={lambda:.6}: {name} mismatched: {pair:?}"
+                );
+            }
+            // find_eigenvalues brackets each root to ~1e-10 in λ, which leaves
+            // a relative imbalance up to ~2e-6; off an eigenvalue it is O(1).
+            assert!(
+                rel_diff(pairs[3]) < 1e-4,
+                "λ={lambda:.6}: energy balance at r_outer mismatched: {:?}",
+                pairs[3]
+            );
+        }
+        for pair in eigenvalues.windows(2) {
+            let midway = 0.5 * (pair[0] + pair[1]);
+            let balance = interface_pairs(midway)[3];
+            assert!(
+                rel_diff(balance) > 0.1,
+                "λ={midway:.6} is not an eigenvalue, yet the r_outer balance holds: {balance:?}"
+            );
+        }
     }
 
     #[test]
     fn test_initial_condition_reconstruction() {
-        // Use more modes for better convergence
-        let mut params = ThreeRegionParams::default();
-        params.num_modes = 100;
-
+        // At t = 0 the series reproduces the piecewise-constant initial
+        // condition in every region, away from the jumps where Gibbs
+        // oscillation is expected.
+        let params = ThreeRegionParams {
+            num_modes: 100,
+            ..Default::default()
+        };
         let modes = compute_eigenmodes(&params);
+        let series_at_t0 = |r: f64| -> f64 {
+            params.t_ambient
+                + modes
+                    .iter()
+                    .map(|m| m.amplitude * phi(m, r, &params))
+                    .sum::<f64>()
+        };
 
-        // At t=0, the temperature at center should equal initial liquid temperature
-        let t_center_t0 = three_region_temperature(0.0, 0.0, &params, &modes);
-        let expected = params.t_liquid_init;
-        let target = expected - params.t_ambient; // 75°C deviation from ambient
-
-        println!("Initial condition reconstruction:");
-        println!("  Target deviation from ambient: {:.1}°C", target);
-        println!("  Expected T(0,0) = {:.1}°C", expected);
-        println!("  Computed T(0,0) = {:.1}°C", t_center_t0);
-        println!("  Error = {:.1}°C", (t_center_t0 - expected).abs());
-        println!("  Number of modes: {}", modes.len());
-
-        // Print detailed mode analysis
-        println!("\nMode analysis at center (t=0):");
-        println!("  Need contributions to sum to {:.1}", target);
-        let mut cumsum = 0.0;
-        let mut max_contrib = 0.0_f64;
-
-        for (i, mode) in modes.iter().enumerate() {
-            let phi_0 = eigenfunction_at_r(0.0, mode.lambda, mode.coeff_a, mode.coeff_b,
-                                           mode.coeff_c, mode.coeff_d, mode.gamma_num, mode.gamma_den, &params);
-            let contrib = mode.amplitude * phi_0;
-            cumsum += contrib;
-            max_contrib = max_contrib.max(contrib.abs());
-
-            // Only print first 15 and every 10th after that
-            if i < 15 || i % 10 == 0 {
-                println!("  Mode {:3}: λ={:.4}, amp={:8.3}, φ(0)={:7.2}, contrib={:8.2}, cumsum={:8.2}",
-                    i+1, mode.lambda, mode.amplitude, phi_0, contrib, cumsum);
-            }
-        }
-
-        println!("\nSummary:");
-        println!("  Total modes: {}", modes.len());
-        println!("  Final cumsum: {:.2}", cumsum);
-        println!("  Target: {:.2}", target);
-        println!("  Max |contribution|: {:.2}", max_contrib);
-        println!("  Error: {:.1}%", (cumsum - target).abs() / target * 100.0);
-
-        // The error should be relatively small
-        let error_pct = (t_center_t0 - expected).abs() / (expected - params.t_ambient) * 100.0;
-        if error_pct > 50.0 {
-            println!("WARNING: Initial condition error large: {:.1}%", error_pct);
+        // A truncated series rings for about one wavelength of its highest
+        // mode on either side of a jump; that wavelength differs per region.
+        let lambda_max = modes.last().unwrap().lambda;
+        let margin = |alpha: f64| 2.0 * PI * alpha.sqrt() / lambda_max;
+        let regions = [
+            (
+                0.0,
+                params.r_inner - margin(params.alpha_1),
+                params.t_liquid_init,
+                "liquid",
+            ),
+            (
+                params.r_inner + margin(params.alpha_2),
+                params.r_outer - margin(params.alpha_2),
+                params.t_shell_init,
+                "shell",
+            ),
+            (
+                params.r_outer + margin(params.alpha_3),
+                params.r_max,
+                params.t_ambient,
+                "air",
+            ),
+        ];
+        for (a, b, expected, name) in regions {
+            const SAMPLES: usize = 50;
+            let sum_sq: f64 = (0..SAMPLES)
+                .map(|i| {
+                    let r = a + (b - a) * i as f64 / (SAMPLES - 1) as f64;
+                    (series_at_t0(r) - expected).powi(2)
+                })
+                .sum();
+            let rms = (sum_sq / SAMPLES as f64).sqrt();
+            assert!(
+                rms < 2.0,
+                "{name}: t=0 reconstruction RMS error {rms:.2} °C"
+            );
         }
     }
-
 
     #[test]
     fn test_boundary_condition_satisfied() {
         let params = ThreeRegionParams::default();
         let modes = compute_eigenmodes(&params);
-        // With Robin BC (h_conv=0, natural radiation condition), T(r_max) is NOT
-        // exactly T_ambient. But at late times it should approach ambient.
+        // Each mode vanishes at r_max (Dirichlet), so T(r_max) is ambient.
         let temp = three_region_temperature(params.r_max, 100000.0, &params, &modes);
         assert!(
             (temp - params.t_ambient).abs() < 5.0,
@@ -1310,8 +1638,18 @@ mod tests {
         let t2 = three_region_temperature(0.0, 500.0, &params, &modes);
         let t3 = three_region_temperature(0.0, 1000.0, &params, &modes);
         // Should be cooling toward ambient
-        assert!(t2 < t1 || (t1 - params.t_ambient).abs() < 5.0, "Should cool: t1={}, t2={}", t1, t2);
-        assert!(t3 < t2 || (t2 - params.t_ambient).abs() < 5.0, "Should cool: t2={}, t3={}", t2, t3);
+        assert!(
+            t2 < t1 || (t1 - params.t_ambient).abs() < 5.0,
+            "Should cool: t1={}, t2={}",
+            t1,
+            t2
+        );
+        assert!(
+            t3 < t2 || (t2 - params.t_ambient).abs() < 5.0,
+            "Should cool: t2={}, t3={}",
+            t2,
+            t3
+        );
     }
 
     #[test]
@@ -1329,45 +1667,25 @@ mod tests {
 
     #[test]
     fn test_solution_at_various_times() {
-        // Test convergence behavior at different time points
-        let mut params = ThreeRegionParams::default();
-        params.num_modes = 50;
-
+        // The liquid sits above both shell and room, so its average never rises.
+        let params = ThreeRegionParams::default();
         let modes = compute_eigenmodes(&params);
-
-        println!("Temperature at center for different times:");
-        for t in &[0.0, 10.0, 50.0, 100.0, 200.0, 500.0, 1000.0] {
-            let temp = three_region_temperature(0.0, *t, &params, &modes);
-            println!("  t={:5.0}s: T(0) = {:.1}°C", t, temp);
+        let avg = three_region_liquid_average_closed_form(&params, &modes, 3600.0, 361);
+        for pair in avg.windows(2) {
+            let ((t0, temp0), (t1, temp1)) = (pair[0], pair[1]);
+            assert!(
+                temp1 <= temp0 + 1e-9,
+                "liquid average rose from {temp0:.4} °C at {t0:.0} s to {temp1:.4} °C at {t1:.0} s"
+            );
         }
-
-        // Look at the contribution decay for each mode at different times
-        println!("\nMode decay analysis:");
-        let decay_times: Vec<f64> = modes.iter().map(|m| 1.0 / (m.lambda * m.lambda)).collect();
-        println!("  Mode 1: τ = {:.1}s", decay_times[0]);
-        println!("  Mode 5: τ = {:.2}s", decay_times.get(4).unwrap_or(&0.0));
-        println!("  Mode 10: τ = {:.2}s", decay_times.get(9).unwrap_or(&0.0));
-        println!("  Mode 20: τ = {:.3}s", decay_times.get(19).unwrap_or(&0.0));
-
-        // At t=100s, how many modes contribute significantly?
-        let t = 100.0;
-        println!("\nAt t={}s, mode contributions:", t);
-        let mut cumsum = 0.0;
-        for (i, mode) in modes.iter().take(20).enumerate() {
-            let phi_0 = eigenfunction_at_r(0.0, mode.lambda, mode.coeff_a, mode.coeff_b,
-                                           mode.coeff_c, mode.coeff_d, mode.gamma_num, mode.gamma_den, &params);
-            let temporal = (-mode.lambda * mode.lambda * t).exp();
-            let contrib = mode.amplitude * phi_0 * temporal;
-            cumsum += contrib;
-            println!("  Mode {:2}: decay={:.3e}, contrib={:8.3}, cumsum={:8.2}",
-                i+1, temporal, contrib, cumsum);
-        }
-
-        // Expected: higher modes decay fast, so at t=100s only first few matter
-        // At long times, T should approach T_ambient
-        let t_late = three_region_temperature(0.0, 1000.0, &params, &modes);
-        assert!(t_late < params.t_liquid_init, "Temperature should decrease");
-        assert!(t_late > params.t_ambient, "Temperature should be above ambient at 1000s");
+        let (_, t_end) = *avg.last().unwrap();
+        assert!(
+            t_end < params.t_liquid_init && t_end > params.t_ambient,
+            "liquid average {t_end:.2} °C at 3600 s should lie between ambient {} °C and \
+             initial {} °C",
+            params.t_ambient,
+            params.t_liquid_init
+        );
     }
 
     #[test]
@@ -1382,8 +1700,10 @@ mod tests {
         //
         // The center is far from any interface, so it should remain at the
         // initial liquid temperature for at least the first ~10 seconds.
-        let mut params = ThreeRegionParams::default();
-        params.num_modes = 50;
+        let params = ThreeRegionParams {
+            num_modes: 50,
+            ..Default::default()
+        };
         let modes = compute_eigenmodes(&params);
 
         let t_init = params.t_liquid_init; // 95°C
@@ -1394,7 +1714,10 @@ mod tests {
         for &t in &[0.0, 1.0, 5.0, 10.0, 30.0, 60.0] {
             let temp = three_region_temperature(0.0, t, &params, &modes);
             let error = (temp - t_init).abs();
-            println!("  t={:5.1}s: T(center) = {:.2}°C, error = {:.2}°C", t, temp, error);
+            println!(
+                "  t={:5.1}s: T(center) = {:.2}°C, error = {:.2}°C",
+                t, temp, error
+            );
         }
 
         // At t=0: should be very close to initial temp
@@ -1402,7 +1725,8 @@ mod tests {
         assert!(
             (t0 - t_init).abs() < 2.0,
             "At t=0, center should be ~{:.0}°C, got {:.1}°C",
-            t_init, t0
+            t_init,
+            t0
         );
 
         // At t=1s: center should barely have changed
@@ -1410,7 +1734,8 @@ mod tests {
         assert!(
             (t1 - t_init).abs() < 2.0,
             "At t=1s, center should still be ~{:.0}°C, got {:.1}°C",
-            t_init, t1
+            t_init,
+            t1
         );
 
         // At t=5s: center should still be very close
@@ -1418,7 +1743,8 @@ mod tests {
         assert!(
             (t5 - t_init).abs() < 3.0,
             "At t=5s, center should still be ~{:.0}°C, got {:.1}°C",
-            t_init, t5
+            t_init,
+            t5
         );
 
         // At t=60s: center may have cooled slightly but should still be hot
@@ -1426,15 +1752,60 @@ mod tests {
         assert!(
             t60 > t_init - 5.0,
             "At t=60s, center should still be above {:.0}°C, got {:.1}°C",
-            t_init - 5.0, t60
+            t_init - 5.0,
+            t60
         );
+    }
+
+    #[test]
+    fn heat_eq_analytical_h_inner_cools_liquid() {
+        // An inner-surface sink must cool the liquid, and no faster than the
+        // sink can remove heat. With the sign wrong the interface term was a
+        // source, its growing mode was missed, and the expansion collapsed to
+        // ambient within minutes.
+        const H_INNER: f64 = 20.0;
+        let liquid_avg = |h_inner: f64| {
+            let params = ThreeRegionParams {
+                h_inner,
+                ..ThreeRegionParams::default()
+            };
+            let modes = compute_eigenmodes(&params);
+            three_region_liquid_average_closed_form(&params, &modes, 1800.0, 31)
+        };
+        let sealed = liquid_avg(0.0);
+        let open = liquid_avg(H_INNER);
+
+        let (t_end, sealed_end) = *sealed.last().unwrap();
+        let open_end = open.last().unwrap().1;
+        assert!(
+            open_end <= sealed_end - 2.0,
+            "h_inner={H_INNER}: liquid {open_end:.2} °C at {t_end} s should be ≥ 2 °C below \
+             the h_inner=0 liquid {sealed_end:.2} °C"
+        );
+
+        // Energy budget: the sink removes at most h·A·(T_liquid_init − T_amb)
+        // per second, and it lowers the wall temperature, which only reduces
+        // the liquid's loss to the shell. So the extra drop versus the sealed
+        // liquid is bounded by that budget over the liquid's heat capacity.
+        let p = ThreeRegionParams::default();
+        let area = 4.0 * PI * p.r_inner.powi(2);
+        let capacity = p.k_1 / p.alpha_1 * 4.0 / 3.0 * PI * p.r_inner.powi(3);
+        let max_power = H_INNER * area * (p.t_liquid_init - p.t_ambient);
+        for (&(t, t_sealed), &(_, t_open)) in sealed.iter().zip(open.iter()) {
+            let max_extra_drop = max_power * t / capacity;
+            assert!(
+                t_open >= t_sealed - max_extra_drop - 1e-6,
+                "t={t:.0} s: liquid {t_open:.2} °C dropped more than the sink allows \
+                 (sealed {t_sealed:.2} °C, max extra drop {max_extra_drop:.2} K)"
+            );
+        }
     }
 
     #[test]
     fn test_panel_default_analytical() {
         // Reproduce the EXACT parameters the panel uses with default settings.
         // Defaults: volume=180, wall=5mm, ceramic, liquid=90, shell=80, room=22,
-        //           h_conv=20, exposure_pct=20, r_max_mult=10, num_modes=50
+        //           h_conv=20, exposure=0.2, r_max_mult=10, num_modes=50
         let water = super::super::heat_equation_numerical::HeatMaterial::water();
         let ceramic = super::super::heat_equation_numerical::HeatMaterial::ceramic();
         let air = super::super::heat_equation_numerical::HeatMaterial::air();
@@ -1451,8 +1822,8 @@ mod tests {
 
         // Compute h_conv_eff exactly as run_heat_sim does:
         // Only outer-surface radiation (inner-surface effects destroy eigenvalues)
-        let sigma: f64 = 5.670_374e-8;
-        let t_avg_k: f64 = 0.5 * (liquid_temp + room_temp) + 273.15;
+        let sigma = STEFAN_BOLTZMANN;
+        let t_avg_k: f64 = 0.5 * (liquid_temp + room_temp) + CELSIUS_TO_KELVIN;
         let r_inner = inner_r_cm / 100.0;
         let r_outer = outer_r_cm / 100.0;
 
@@ -1487,8 +1858,15 @@ mod tests {
         // Print first 5 modes and last 5
         for (i, m) in modes.iter().enumerate() {
             if i < 5 || i >= modes.len().saturating_sub(5) {
-                println!("  mode {:3}: λ={:.6}, amp={:10.3}, τ={:.2}s, gn={:.4}, gd={:.4}",
-                    i+1, m.lambda, m.amplitude, 1.0/(m.lambda*m.lambda), m.gamma_num, m.gamma_den);
+                println!(
+                    "  mode {:3}: λ={:.6}, amp={:10.3}, τ={:.2}s, gn={:.4}, gd={:.4}",
+                    i + 1,
+                    m.lambda,
+                    m.amplitude,
+                    1.0 / (m.lambda * m.lambda),
+                    m.gamma_num,
+                    m.gamma_den
+                );
             }
         }
 
@@ -1496,110 +1874,283 @@ mod tests {
         let avg = three_region_liquid_average_closed_form(&params, &modes, 1800.0, 20);
         println!("\nLiquid average temperature:");
         for &(t, temp) in &avg {
-            println!("  t={:5.1}min: T_avg = {:.1}°C", t/60.0, temp);
+            println!("  t={:5.1}min: T_avg = {:.1}°C", t / 60.0, temp);
         }
 
         // The liquid should start near 90°C and stay above 60°C for some minutes
-        assert!(avg[0].1 > 85.0, "t=0: liquid avg should be ~90°C, got {:.1}", avg[0].1);
-        let above_60_min = avg.iter()
-            .filter(|(_, t)| *t >= 60.0)
-            .last()
+        assert!(
+            avg[0].1 > 85.0,
+            "t=0: liquid avg should be ~90°C, got {:.1}",
+            avg[0].1
+        );
+        let above_60_min = avg
+            .iter()
+            .rfind(|(_, t)| *t >= 60.0)
             .map(|(t, _)| t / 60.0)
             .unwrap_or(0.0);
         println!("\nTime above 60°C: {:.1} min", above_60_min);
-        assert!(above_60_min > 1.0, "Should stay above 60°C for more than 1 minute");
+        assert!(
+            above_60_min > 1.0,
+            "Should stay above 60°C for more than 1 minute"
+        );
     }
 
-    // ─── Exposed-liquid sphere tests ──────────────────────────────────
-
-    #[test]
-    fn test_exposed_eigenvalue_search() {
-        let params = ExposedLiquidParams {
-            radius: 0.035,
-            alpha: 1.43e-7,
-            k: 0.6,
-            h_eff: 100.0,
-            t_init: 90.0,
-            t_ambient: 22.0,
-        };
-        let biot = params.h_eff * params.radius / params.k;
-        println!("Bi = {:.2}", biot);
-
-        let betas = find_exposed_eigenvalues(&params, 10);
-        assert!(betas.len() >= 5, "Should find at least 5 eigenvalues, got {}", betas.len());
-
-        println!("Exposed-sphere eigenvalues:");
-        for (i, &beta) in betas.iter().enumerate() {
-            let tau = 1.0 / (params.alpha * beta * beta);
-            println!("  β_{} = {:.2}, βR = {:.4}, τ = {:.1}s", i + 1, beta, beta * params.radius, tau);
-        }
-
-        // Eigenvalues should be increasing
-        for i in 1..betas.len() {
-            assert!(betas[i] > betas[i - 1], "Eigenvalues should increase");
+    /// The panel's default mug (180 ml, 5 mm ceramic, coffee 90 °C, room
+    /// 22 °C, lid 20% open) with its shell at `shell_c`.
+    fn default_mug(shell_c: f64) -> ThreeRegionMug {
+        let r_inner = (3.0 * 180.0 / (4.0 * PI)).cbrt() / 100.0;
+        let r_outer = r_inner + 0.005;
+        let ceramic = super::super::heat_equation_numerical::HeatMaterial::ceramic();
+        ThreeRegionMug {
+            r_inner,
+            r_outer,
+            r_max: r_outer * 10.0,
+            shell: ceramic,
+            liquid_temp_c: 90.0,
+            shell_temp_c: shell_c,
+            room_temp_c: 22.0,
+            h_conv: 20.0,
+            exposure: 0.2,
+            num_modes: 50,
         }
     }
 
-    #[test]
-    fn test_exposed_initial_condition() {
-        let params = ExposedLiquidParams {
-            radius: 0.035,
-            alpha: 1.43e-7,
-            k: 0.6,
-            h_eff: 100.0,
-            t_init: 90.0,
-            t_ambient: 22.0,
-        };
-
-        let result = exposed_liquid_average(&params, 50, 1800.0, 20);
-        assert!((result[0].1 - 90.0).abs() < 1.0,
-            "t=0 should be ~90°C, got {:.1}", result[0].1);
-
-        // At late times, should approach ambient
-        let last = result.last().unwrap().1;
-        println!("T(t=0) = {:.1}°C, T(t=1800s) = {:.1}°C", result[0].1, last);
-        assert!(last < 90.0, "Should cool from initial");
+    fn rms(a: &[f64], b: &[f64]) -> f64 {
+        let sum: f64 = a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum();
+        (sum / a.len() as f64).sqrt()
     }
 
     #[test]
-    fn test_exposed_high_biot_cools_fast() {
-        // With high h_eff (strong evaporation), cooling should be very fast
-        let params = ExposedLiquidParams {
-            radius: 0.035,
-            alpha: 1.43e-7,
-            k: 0.6,
-            h_eff: 600.0, // ~evaporation-dominated
-            t_init: 90.0,
-            t_ambient: 22.0,
-        };
-        let biot = params.h_eff * params.radius / params.k;
-        println!("High-Bi test: Bi = {:.1}", biot);
+    fn first_segment_kernel_reproduces_single_linearisation() {
+        let mug = default_mug(80.0);
+        let duration = 1800.0;
+        let params = ThreeRegionParams::for_mug(&mug);
+        let modes = compute_eigenmodes(&params);
+        let today = simulate_three_region_analytical(&params, &modes, duration, 100, 80, 0.10);
 
-        let result = exposed_liquid_average(&params, 50, 600.0, 20);
-        println!("Exposed-sphere cooling (high Bi):");
-        for &(t, temp) in &result {
-            println!("  t={:5.0}s: T_avg = {:.1}°C", t, temp);
+        let kernel = SegmentStart::uniform(&mug).solve(
+            &mug,
+            0.5 * (mug.liquid_temp_c + mug.room_temp_c),
+            mug.liquid_temp_c,
+        );
+        let segmented = segment_snapshots(&[kernel], duration, 100, 80, 0.10);
+
+        assert_eq!(today.len(), segmented.len());
+        for (a, b) in today.iter().zip(&segmented) {
+            assert_eq!(a.time_s, b.time_s);
+            for (ta, tb) in a.temperatures.iter().zip(&b.temperatures) {
+                assert!((ta - tb).abs() < 1e-9, "t={}: {ta} vs {tb}", a.time_s);
+            }
         }
-
-        // At 5 minutes with Bi~35, should have cooled significantly
-        let t_300 = result.iter().find(|(t, _)| *t >= 300.0).unwrap().1;
-        assert!(t_300 < 60.0, "With high Bi, should cool below 60°C by 5min, got {:.1}", t_300);
     }
 
     #[test]
-    fn test_exposed_approaches_ambient() {
-        let params = ExposedLiquidParams {
-            radius: 0.035,
-            alpha: 1.43e-7,
-            k: 0.6,
-            h_eff: 100.0,
-            t_init: 90.0,
-            t_ambient: 22.0,
+    fn projection_reconstructs_uniform_start() {
+        // The uniform three-region start has closed-form amplitudes; Simpson
+        // projection must give the same series. Compared at 30 s, where the
+        // series no longer carries the start's interface discontinuities.
+        let mug = default_mug(80.0);
+        let params = ThreeRegionParams::for_mug(&mug);
+        let exact = compute_eigenmodes(&params);
+        let amplitudes = project_profile(&params, &exact, |region, _| match region {
+            0 => mug.liquid_temp_c,
+            1 => mug.shell_temp_c,
+            _ => mug.room_temp_c,
+        });
+        let mut projected = exact.clone();
+        for (m, a) in projected.iter_mut().zip(amplitudes) {
+            m.amplitude = a;
+        }
+        let radii: Vec<f64> = (0..200).map(|i| i as f64 / 199.0 * params.r_max).collect();
+        let eval = |modes: &[Eigenmode]| -> Vec<f64> {
+            radii
+                .iter()
+                .map(|&r| three_region_temperature(r, 30.0, &params, modes))
+                .collect()
         };
+        let err = rms(&eval(&exact), &eval(&projected));
+        assert!(err < 0.01, "RMS {err:.4} K");
+    }
 
-        let result = exposed_liquid_average(&params, 50, 10000.0, 50);
-        let last = result.last().unwrap().1;
-        assert!((last - 22.0).abs() < 5.0,
-            "At long times should approach ambient, got {:.1}°C", last);
+    #[test]
+    fn relinearised_is_continuous_across_segments() {
+        // The panel's maximum series terms: the highest modes are the
+        // hardest to project.
+        let mug = ThreeRegionMug {
+            num_modes: 100,
+            ..default_mug(22.0)
+        };
+        let segments = solve_segments(&mug, ANALYTICAL_SEGMENTS, 1800.0);
+        let len = 1800.0 / ANALYTICAL_SEGMENTS as f64;
+        let radii: Vec<f64> = (0..200).map(|i| i as f64 / 199.0 * mug.r_max).collect();
+        for (k, pair) in segments.windows(2).enumerate() {
+            let (prev, next) = (&pair[0], &pair[1]);
+            let jump = (next.liquid_average(1e-3) - prev.liquid_average(len)).abs();
+            assert!(
+                jump < 0.05,
+                "boundary {k}: liquid average jumps {jump:.4} K"
+            );
+            let before: Vec<f64> = radii.iter().map(|&r| prev.temperature(r, len)).collect();
+            let after: Vec<f64> = radii.iter().map(|&r| next.temperature(r, 1e-3)).collect();
+            let err = rms(&before, &after);
+            assert!(err < 0.01, "boundary {k}: profile RMS jump {err:.4} K");
+        }
+    }
+
+    #[test]
+    fn relinearised_handles_near_room_start() {
+        let mug = ThreeRegionMug {
+            liquid_temp_c: 30.0,
+            ..default_mug(22.0)
+        };
+        let snaps =
+            simulate_three_region_relinearised(&mug, ANALYTICAL_SEGMENTS, 1800.0, 61, 80, 0.10);
+        let avg: Vec<f64> = snaps
+            .iter()
+            .map(|s| {
+                let liquid: Vec<f64> = s
+                    .radii
+                    .iter()
+                    .zip(&s.temperatures)
+                    .filter(|(r, _)| **r <= mug.r_inner)
+                    .map(|(_, t)| *t)
+                    .collect();
+                liquid.iter().sum::<f64>() / liquid.len() as f64
+            })
+            .collect();
+        for s in &snaps {
+            assert!(
+                s.temperatures.iter().all(|t| t.is_finite()),
+                "t={}",
+                s.time_s
+            );
+        }
+        for (i, w) in avg.windows(2).enumerate() {
+            assert!(
+                w[1] <= w[0] + 1e-6,
+                "snapshot {i}: liquid {:.4} → {:.4} °C",
+                w[0],
+                w[1]
+            );
+        }
+        let end = *avg.last().unwrap();
+        assert!(
+            end > mug.room_temp_c - 1e-6 && end < 30.0,
+            "end {end:.3} °C"
+        );
+    }
+
+    #[test]
+    fn relinearised_respects_snapshot_times() {
+        let mug = default_mug(80.0);
+        for duration in [600.0, 7200.0] {
+            let n = 37;
+            let snaps = simulate_three_region_relinearised(
+                &mug,
+                ANALYTICAL_SEGMENTS,
+                duration,
+                n,
+                40,
+                0.10,
+            );
+            assert_eq!(snaps.len(), n);
+            for (i, s) in snaps.iter().enumerate() {
+                let expected = i as f64 / (n - 1) as f64 * duration;
+                assert!(
+                    (s.time_s - expected).abs() < 1e-9,
+                    "{duration} s run, snapshot {i}"
+                );
+            }
+            assert_eq!(snaps[0].temperatures[0], mug.liquid_temp_c);
+        }
+    }
+
+    #[test]
+    fn sealed_lid_has_no_inner_loss() {
+        let mug = ThreeRegionMug {
+            exposure: 0.0,
+            ..default_mug(80.0)
+        };
+        for (k, seg) in solve_segments(&mug, ANALYTICAL_SEGMENTS, 1800.0)
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(seg.params.h_inner, 0.0, "segment {k}");
+        }
+    }
+
+    #[test]
+    fn finds_close_root_pair() {
+        // A 350 ml mug with the lid 56% open, its open-top loss linearised at
+        // 90 °C: the two slowest modes sit 0.0014 apart, inside one scan
+        // step, so the determinant does not change sign between samples.
+        // Missing them dropped the coffee to room within one segment.
+        let ceramic = super::super::heat_equation_numerical::HeatMaterial::ceramic();
+        let r_inner = (3.0 * 350.0e-6 / (4.0 * PI)).cbrt();
+        let r_outer = r_inner + 0.005;
+        let mug = ThreeRegionMug {
+            r_inner,
+            r_outer,
+            r_max: r_outer * 10.0,
+            shell: ceramic,
+            liquid_temp_c: 90.0,
+            shell_temp_c: 22.0,
+            room_temp_c: 22.0,
+            h_conv: 20.0,
+            exposure: 0.56,
+            num_modes: 50,
+        };
+        let params = ThreeRegionParams::linearised(&mug, 90.0, 22.0);
+        let lambdas = find_eigenvalues(&params, 4);
+        for (lo, hi) in [(0.0330, 0.0336), (0.0343, 0.0349)] {
+            assert!(
+                lambdas.iter().any(|&l| (lo..hi).contains(&l)),
+                "no eigenvalue in [{lo}, {hi}]: {lambdas:?}"
+            );
+        }
+        assert!(
+            lambdas.windows(2).all(|w| w[0] < w[1]),
+            "eigenvalues out of order: {lambdas:?}"
+        );
+    }
+
+    #[test]
+    fn exposure_sweep_keeps_every_slow_mode() {
+        // 500 ml, 10 mm wall, h_conv 50: as the lid opens, the gap between
+        // the two slowest modes of some segment passes through 1% of the
+        // fundamental; dropping one of them cooled the coffee 20–30 K in a
+        // single segment. Coffee at 10 and 30 min must fall as the lid opens.
+        let ceramic = super::super::heat_equation_numerical::HeatMaterial::ceramic();
+        let r_inner = (3.0 * 500.0e-6 / (4.0 * PI)).cbrt();
+        let r_outer = r_inner + 0.010;
+        let at = |exposure: f64| {
+            let mug = ThreeRegionMug {
+                r_inner,
+                r_outer,
+                r_max: r_outer * 10.0,
+                shell: ceramic,
+                liquid_temp_c: 90.0,
+                shell_temp_c: 22.0,
+                room_temp_c: 22.0,
+                h_conv: 50.0,
+                exposure,
+                num_modes: 50,
+            };
+            let avg = relinearised_liquid_average(&mug, ANALYTICAL_SEGMENTS, 1800.0, 4);
+            (avg[1].1, avg[3].1)
+        };
+        let sweep: Vec<(f64, f64)> = (0..=25).map(|k| at(k as f64 / 100.0)).collect();
+        for (k, w) in sweep.windows(2).enumerate() {
+            assert!(
+                w[1].0 <= w[0].0 + 1e-6 && w[1].1 <= w[0].1 + 1e-6,
+                "lid {}% → {}%: 10 min {:.2} → {:.2} °C, 30 min {:.2} → {:.2} °C",
+                k,
+                k + 1,
+                w[0].0,
+                w[1].0,
+                w[0].1,
+                w[1].1
+            );
+        }
     }
 }

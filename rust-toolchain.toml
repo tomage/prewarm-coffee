@@ -1,0 +1,7 @@
+# Pinned so local `make lint` and CI see the same clippy/rustfmt; an unpinned
+# @stable let new lints land silently and the gates rotted. Bump deliberately
+# and fix the new lints in the same commit.
+[toolchain]
+channel = "1.93.0"
+components = ["clippy", "rustfmt", "llvm-tools-preview"]
+targets = ["wasm32-unknown-unknown"]

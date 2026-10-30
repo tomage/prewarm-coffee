@@ -1,7 +1,10 @@
 use crate::analytics::track_event;
+use crate::components::AccordionGroup;
 use crate::haptics::vibrate_tick;
 use crate::physics::MugMaterial;
-use crate::storage::{c_to_f, display_temp as fmt_temp, f_to_c, SharedSettings, StoredSettings};
+use crate::storage::{
+    c_to_f, display_temp as fmt_temp, f_to_c, material_to_string, SharedSettings,
+};
 use leptos::*;
 use std::cell::Cell;
 
@@ -18,13 +21,41 @@ fn track_first_interaction() {
     });
 }
 
+/// How the controls are arranged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ControlsLayout {
+    /// One card with section headings, beside the chart (desktop, theory pages).
+    #[default]
+    Flat,
+    /// Collapsible groups under the chart (mobile overlay).
+    Accordion,
+}
+
+impl ControlsLayout {
+    /// Prefix for element ids, so ids name their layout. Only one layout is
+    /// mounted at a time; the overlay's ids keep their `m-` prefix so they
+    /// stay stable for tests and anything else that names them.
+    pub fn id_prefix(self) -> &'static str {
+        match self {
+            ControlsLayout::Flat => "",
+            ControlsLayout::Accordion => "m-",
+        }
+    }
+}
+
+/// The mug, temperature and simulation controls plus Reset.
+///
+/// `children` are the active panel's own controls: after Duration in the
+/// flat layout, in the Advanced group in the accordion layout. `on_reset`
+/// runs in the same batch as the shared reset.
 #[component]
 pub fn MugControls(
     settings: SharedSettings,
+    #[prop(optional)] layout: ControlsLayout,
     #[prop(optional)] children: Option<Children>,
     #[prop(optional, into)] on_reset: Option<Callback<()>>,
 ) -> impl IntoView {
-    let (material, set_material) = settings.material.split();
+    let material = settings.material.read_only();
     let (volume_ml, set_volume_ml) = settings.volume_ml.split();
     let (wall_thickness_mm, set_wall_thickness_mm) = settings.wall_thickness_mm.split();
     let (coffee_temp_c, set_coffee_temp_c) = settings.coffee_temp_c.split();
@@ -38,15 +69,18 @@ pub fn MugControls(
     let (duration_minutes, set_duration_minutes) = settings.duration_minutes.split();
 
     let display_temp = move |c: f64| fmt_temp(c, use_fahrenheit.get());
+    let prefix = layout.id_prefix();
+    let id = move |name: &str| format!("{prefix}{name}");
 
-    view! {
-        <div class="controls">
-            <h3>"Mug Properties"</h3>
-
+    let material_control = move || {
+        view! {
             <div class="control-group">
-                <label for="material">"Material"</label>
+                <label for=id("material")>"Material"</label>
+                // prop:value (not only the options' `selected`) so the shown
+                // choice follows every change of the setting: Reset, sync.
                 <select
-                    id="material"
+                    id=id("material")
+                    prop:value=move || material_to_string(material.get())
                     on:change=move |ev| {
                         let value = event_target_value(&ev);
                         let mat = match value.as_str() {
@@ -56,8 +90,7 @@ pub fn MugControls(
                             "plastic" => MugMaterial::Plastic,
                             _ => MugMaterial::Ceramic,
                         };
-                        set_material.set(mat);
-                        set_emissivity.set(mat.emissivity());
+                        settings.set_material(mat);
                         track_first_interaction();
                     }
                 >
@@ -75,12 +108,16 @@ pub fn MugControls(
                     </option>
                 </select>
             </div>
+        }
+    };
 
+    let volume_control = move || {
+        view! {
             <div class="control-group">
-                <label for="volume">"Volume: " {move || format!("{:.0} ml", volume_ml.get())}</label>
+                <label for=id("volume")>"Volume: " {move || format!("{:.0} ml", volume_ml.get())}</label>
                 <input
                     type="range"
-                    id="volume"
+                    id=id("volume")
                     min="40"
                     max="500"
                     step="10"
@@ -94,12 +131,16 @@ pub fn MugControls(
                     }
                 />
             </div>
+        }
+    };
 
+    let thickness_control = move || {
+        view! {
             <div class="control-group">
-                <label for="thickness">"Wall Thickness: " {move || format!("{:.1} mm", wall_thickness_mm.get())}</label>
+                <label for=id("thickness")>"Wall Thickness: " {move || format!("{:.1} mm", wall_thickness_mm.get())}</label>
                 <input
                     type="range"
-                    id="thickness"
+                    id=id("thickness")
                     min="1"
                     max="10"
                     step="0.5"
@@ -112,12 +153,16 @@ pub fn MugControls(
                     }
                 />
             </div>
+        }
+    };
 
+    let h_conv_control = move || {
+        view! {
             <div class="control-group">
-                <label for="h-conv">"Convection: " {move || format!("{:.0} W/(m\u{00B2}\u{00B7}K)", h_conv.get())}</label>
+                <label for=id("h-conv")>"Convection: " {move || format!("{:.0} W/(m\u{00B2}\u{00B7}K)", h_conv.get())}</label>
                 <input
                     type="range"
-                    id="h-conv"
+                    id=id("h-conv")
                     min="2"
                     max="50"
                     step="1"
@@ -130,12 +175,16 @@ pub fn MugControls(
                     }
                 />
             </div>
+        }
+    };
 
+    let emissivity_control = move || {
+        view! {
             <div class="control-group">
-                <label for="emissivity">"Emissivity: " {move || format!("{:.2}", emissivity.get())}</label>
+                <label for=id("emissivity")>"Emissivity: " {move || format!("{:.2}", emissivity.get())}</label>
                 <input
                     type="range"
-                    id="emissivity"
+                    id=id("emissivity")
                     min="0"
                     max="1"
                     step="0.01"
@@ -149,12 +198,16 @@ pub fn MugControls(
                 />
                 <span class="control-hint">"0 = no radiation, 1 = perfect blackbody"</span>
             </div>
+        }
+    };
 
+    let exposure_control = move || {
+        view! {
             <div class="control-group">
-                <label for="exposure">"Lid opening: " {move || format!("{:.0}%", exposure_pct.get())}</label>
+                <label for=id("exposure")>"Lid opening: " {move || format!("{:.0}%", exposure_pct.get())}</label>
                 <input
                     type="range"
-                    id="exposure"
+                    id=id("exposure")
                     min="0"
                     max="100"
                     step="5"
@@ -168,127 +221,73 @@ pub fn MugControls(
                 />
                 <span class="control-hint">"0% = lid on, 100% = fully open"</span>
             </div>
+        }
+    };
 
-            <div class="control-group-header">
-                <h3>"Temperatures"</h3>
-                <button
-                    class="unit-toggle"
-                    on:click=move |_| {
-                        set_use_fahrenheit.set(!use_fahrenheit.get());
-                        track_first_interaction();
-                    }
-                >
-                    {move || if use_fahrenheit.get() { "°F → °C" } else { "°C → °F" }}
-                </button>
-            </div>
+    let unit_toggle = move || {
+        view! {
+            <button
+                class="unit-toggle"
+                on:click=move |_| {
+                    set_use_fahrenheit.set(!use_fahrenheit.get());
+                    track_first_interaction();
+                }
+            >
+                {move || if use_fahrenheit.get() { "°F → °C" } else { "°C → °F" }}
+            </button>
+        }
+    };
 
+    // One temperature slider: the setting is stored in °C, the slider shows
+    // the current unit; `range_c`/`range_f` are its (min, max) per unit.
+    let temp_control = move |name: &'static str,
+                             label: &'static str,
+                             (temp_c, set_temp_c): (ReadSignal<f64>, WriteSignal<f64>),
+                             range_c: (&'static str, &'static str),
+                             range_f: (&'static str, &'static str)| {
+        view! {
             <div class="control-group">
-                <label for="coffee-temp">"Coffee: " {move || display_temp(coffee_temp_c.get())}</label>
+                <label for=id(name)>{label} {move || display_temp(temp_c.get())}</label>
                 <input
                     type="range"
-                    id="coffee-temp"
-                    min=move || if use_fahrenheit.get() { "32" } else { "0" }
-                    max=move || if use_fahrenheit.get() { "212" } else { "100" }
+                    id=id(name)
+                    min=move || if use_fahrenheit.get() { range_f.0 } else { range_c.0 }
+                    max=move || if use_fahrenheit.get() { range_f.1 } else { range_c.1 }
                     step="1"
                     prop:value=move || {
                         if use_fahrenheit.get() {
-                            c_to_f(coffee_temp_c.get()).round()
+                            c_to_f(temp_c.get()).round()
                         } else {
-                            coffee_temp_c.get().round()
+                            temp_c.get().round()
                         }
                     }
                     on:input=move |ev| {
                         if let Ok(v) = event_target_value(&ev).parse::<f64>() {
                             let c = if use_fahrenheit.get() { f_to_c(v).round() } else { v };
-                            set_coffee_temp_c.set(c);
+                            set_temp_c.set(c);
                             vibrate_tick();
                         }
                     }
                 />
             </div>
+        }
+    };
+    let temperature_controls = move || {
+        view! {
+            {temp_control("coffee-temp", "Coffee: ", (coffee_temp_c, set_coffee_temp_c), ("0", "100"), ("32", "212"))}
+            {temp_control("preheat-temp", "Preheat mug: ", (preheat_temp_c, set_preheat_temp_c), ("-10", "110"), ("14", "230"))}
+            {temp_control("room-temp", "Room: ", (room_temp_c, set_room_temp_c), ("-10", "50"), ("14", "122"))}
+            {temp_control("min-drinkable", "Too cold below: ", (min_drinkable_c, set_min_drinkable_c), ("50", "70"), ("122", "158"))}
+        }
+    };
 
+    let duration_control = move || {
+        view! {
             <div class="control-group">
-                <label for="preheat-temp">"Preheat mug: " {move || display_temp(preheat_temp_c.get())}</label>
+                <label for=id("duration")>"Duration: " {move || format!("{} min", duration_minutes.get())}</label>
                 <input
                     type="range"
-                    id="preheat-temp"
-                    min=move || if use_fahrenheit.get() { "14" } else { "-10" }
-                    max=move || if use_fahrenheit.get() { "230" } else { "110" }
-                    step="1"
-                    prop:value=move || {
-                        if use_fahrenheit.get() {
-                            c_to_f(preheat_temp_c.get()).round()
-                        } else {
-                            preheat_temp_c.get().round()
-                        }
-                    }
-                    on:input=move |ev| {
-                        if let Ok(v) = event_target_value(&ev).parse::<f64>() {
-                            let c = if use_fahrenheit.get() { f_to_c(v).round() } else { v };
-                            set_preheat_temp_c.set(c);
-                            vibrate_tick();
-                        }
-                    }
-                />
-            </div>
-
-            <div class="control-group">
-                <label for="room-temp">"Room: " {move || display_temp(room_temp_c.get())}</label>
-                <input
-                    type="range"
-                    id="room-temp"
-                    min=move || if use_fahrenheit.get() { "14" } else { "-10" }
-                    max=move || if use_fahrenheit.get() { "122" } else { "50" }
-                    step="1"
-                    prop:value=move || {
-                        if use_fahrenheit.get() {
-                            c_to_f(room_temp_c.get()).round()
-                        } else {
-                            room_temp_c.get().round()
-                        }
-                    }
-                    on:input=move |ev| {
-                        if let Ok(v) = event_target_value(&ev).parse::<f64>() {
-                            let c = if use_fahrenheit.get() { f_to_c(v).round() } else { v };
-                            set_room_temp_c.set(c);
-                            vibrate_tick();
-                        }
-                    }
-                />
-            </div>
-
-            <div class="control-group">
-                <label for="min-drinkable">"Too cold below: " {move || display_temp(min_drinkable_c.get())}</label>
-                <input
-                    type="range"
-                    id="min-drinkable"
-                    min=move || if use_fahrenheit.get() { "122" } else { "50" }
-                    max=move || if use_fahrenheit.get() { "158" } else { "70" }
-                    step="1"
-                    prop:value=move || {
-                        if use_fahrenheit.get() {
-                            c_to_f(min_drinkable_c.get()).round()
-                        } else {
-                            min_drinkable_c.get().round()
-                        }
-                    }
-                    on:input=move |ev| {
-                        if let Ok(v) = event_target_value(&ev).parse::<f64>() {
-                            let c = if use_fahrenheit.get() { f_to_c(v).round() } else { v };
-                            set_min_drinkable_c.set(c);
-                            vibrate_tick();
-                        }
-                    }
-                />
-            </div>
-
-            <h3>"Simulation"</h3>
-
-            <div class="control-group">
-                <label for="duration">"Duration: " {move || format!("{} min", duration_minutes.get())}</label>
-                <input
-                    type="range"
-                    id="duration"
+                    id=id("duration")
                     min="10"
                     max="120"
                     step="5"
@@ -302,32 +301,84 @@ pub fn MugControls(
                     }
                 />
             </div>
+        }
+    };
 
-            {children.map(|c| c())}
-
+    let reset_button = move || {
+        view! {
             <button
                 class="reset-button"
                 on:click=move |_| {
-                    let d = StoredSettings::default();
-                    set_material.set(d.material_enum());
-                    set_volume_ml.set(d.volume_ml);
-                    set_wall_thickness_mm.set(d.wall_thickness_mm);
-                    set_coffee_temp_c.set(d.coffee_temp_c);
-                    set_preheat_temp_c.set(d.preheat_temp_c);
-                    set_room_temp_c.set(d.room_temp_c);
-                    set_min_drinkable_c.set(d.min_drinkable_c);
-                    set_h_conv.set(d.h_conv);
-                    set_emissivity.set(d.emissivity);
-                    set_exposure_pct.set(d.exposure_pct);
-                    set_duration_minutes.set(d.duration_minutes);
-                    // Preserve the user's F/C preference across resets
-                    if let Some(cb) = on_reset {
-                        cb.call(());
-                    }
+                    // One batch: the shared reset and the panel's own reset
+                    // land as a single update, so dependents re-solve once.
+                    batch(|| {
+                        settings.reset_to_defaults();
+                        if let Some(cb) = on_reset {
+                            cb.call(());
+                        }
+                    });
                 }
             >
                 "Reset to defaults"
             </button>
-        </div>
+        }
+    };
+
+    match layout {
+        ControlsLayout::Flat => view! {
+            <div class="controls">
+                <h3>"Mug Properties"</h3>
+                {material_control()}
+                {volume_control()}
+                {thickness_control()}
+                {h_conv_control()}
+                {emissivity_control()}
+                {exposure_control()}
+
+                <div class="control-group-header">
+                    <h3>"Temperatures"</h3>
+                    {unit_toggle()}
+                </div>
+                {temperature_controls()}
+
+                <h3>"Simulation"</h3>
+                {duration_control()}
+
+                {children.map(|c| c())}
+
+                {reset_button()}
+            </div>
+        }
+        .into_view(),
+        ControlsLayout::Accordion => view! {
+            <div class="controls-accordion">
+                <AccordionGroup title="Mug Properties">
+                    {material_control()}
+                    {volume_control()}
+                    {thickness_control()}
+                </AccordionGroup>
+
+                <AccordionGroup title="Temperatures" initially_open=true>
+                    {temperature_controls()}
+                    {unit_toggle()}
+                </AccordionGroup>
+
+                <AccordionGroup title="Simulation">
+                    {duration_control()}
+                </AccordionGroup>
+
+                <AccordionGroup title="Advanced">
+                    {h_conv_control()}
+                    {emissivity_control()}
+                    {exposure_control()}
+                    {children.map(|c| c())}
+                </AccordionGroup>
+
+                <div style="padding: 0.75rem 1rem;">
+                    {reset_button()}
+                </div>
+            </div>
+        }
+        .into_view(),
     }
 }

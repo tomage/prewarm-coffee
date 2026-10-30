@@ -1,8 +1,10 @@
 //! Performance regression tests for physics solvers.
 //!
 //! Measures execution time of the four main solver paths and compares
-//! against stored baselines.  Run with `UPDATE_BASELINES=1` to regenerate
-//! the baselines file (`tests/perf-baselines-unit.json`).
+//! against stored baselines. Timing-sensitive, so they are `#[ignore]`d and
+//! stay out of `cargo test`; run them alone with `make bench`, and regenerate
+//! the baselines file (`tests/perf-baselines-unit.json`) with
+//! `make update-baselines`.
 
 use super::*;
 use std::collections::{BTreeMap, HashMap};
@@ -11,16 +13,20 @@ use std::time::Instant;
 const BASELINES_PATH: &str = "tests/perf-baselines-unit.json";
 const TOLERANCE: f64 = 0.10; // 10% slower → fail
 const SPEEDUP_TOLERANCE: f64 = 0.20; // 20% faster → flag for baseline update
-const ABS_TOLERANCE_MS: f64 = 20.0; // minimum absolute tolerance for fast benchmarks
+
+// Floor on the regression allowance so sub-millisecond benchmarks don't fail
+// on scheduler noise. Kept near the 10% band of the ~10 ms PDE solves: a
+// 20 ms floor let those regress 3× unnoticed.
+const ABS_TOLERANCE_MS: f64 = 1.0;
 const SAMPLE_COUNT_BASELINE: usize = 10;
-const SAMPLE_COUNT_CHECK: usize = 5;
+const SAMPLE_COUNT_CHECK: usize = 10;
 const WARMUP_COUNT: usize = 2;
 
 fn median(values: &[f64]) -> f64 {
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
+    if sorted.len().is_multiple_of(2) {
         (sorted[mid - 1] + sorted[mid]) / 2.0
     } else {
         sorted[mid]
@@ -44,7 +50,10 @@ fn save_baselines(data: &HashMap<String, f64>) {
         .iter()
         .map(|(k, &v)| {
             let mut inner = serde_json::Map::new();
-            inner.insert("median_ms".to_string(), serde_json::json!((v * 100.0).round() / 100.0));
+            inner.insert(
+                "median_ms".to_string(),
+                serde_json::json!((v * 100.0).round() / 100.0),
+            );
             (k.as_str(), serde_json::Value::Object(inner))
         })
         .collect();
@@ -55,7 +64,11 @@ fn save_baselines(data: &HashMap<String, f64>) {
 /// Run a benchmark: warmup, then measure runs, return median ms.
 fn bench<F: FnMut()>(mut f: F) -> f64 {
     let updating = std::env::var("UPDATE_BASELINES").is_ok();
-    let samples = if updating { SAMPLE_COUNT_BASELINE } else { SAMPLE_COUNT_CHECK };
+    let samples = if updating {
+        SAMPLE_COUNT_BASELINE
+    } else {
+        SAMPLE_COUNT_CHECK
+    };
     for _ in 0..WARMUP_COUNT {
         f();
     }
@@ -76,23 +89,28 @@ fn assert_perf(name: &str, measured_ms: f64) {
         let mut baselines = load_baselines();
         baselines.insert(name.to_string(), measured_ms);
         save_baselines(&baselines);
-        eprintln!("  {name} — measured: {:.1}ms (baseline updated)", measured_ms);
+        eprintln!(
+            "  {name} — measured: {:.1}ms (baseline updated)",
+            measured_ms
+        );
         return;
     }
 
     let baselines = load_baselines();
     let Some(&baseline) = baselines.get(name) else {
-        eprintln!("  ⚠ No baseline for {name} — skipping assertion (run UPDATE_BASELINES=1 cargo test to create)");
+        eprintln!(
+            "  ⚠ No baseline for {name} — skipping assertion (run make update-baselines to create)"
+        );
         return;
     };
 
     let regression_threshold = f64::max(baseline * (1.0 + TOLERANCE), baseline + ABS_TOLERANCE_MS);
-    let speedup_threshold = f64::min(baseline * (1.0 - SPEEDUP_TOLERANCE), baseline - ABS_TOLERANCE_MS);
+    let speedup_threshold = baseline * (1.0 - SPEEDUP_TOLERANCE);
     let delta = (measured_ms - baseline) / baseline * 100.0;
     let status = if measured_ms > regression_threshold {
         "✗ REGRESSION"
     } else if measured_ms < speedup_threshold {
-        "⚡ SPEEDUP — update baseline with UPDATE_BASELINES=1"
+        "⚡ SPEEDUP — update baseline with make update-baselines"
     } else {
         "✓"
     };
@@ -104,12 +122,15 @@ fn assert_perf(name: &str, measured_ms: f64) {
     assert!(
         measured_ms <= regression_threshold,
         "{name} regressed: {:.1}ms vs baseline {:.1}ms ({:+.1}%, threshold {:.1}ms)",
-        measured_ms, baseline, delta, regression_threshold
+        measured_ms,
+        baseline,
+        delta,
+        regression_threshold
     );
 
     if measured_ms < speedup_threshold {
         eprintln!(
-            "  ℹ {name} is {:.0}% faster than baseline — consider running UPDATE_BASELINES=1 cargo test",
+            "  ℹ {name} is {:.0}% faster than baseline — consider running make update-baselines",
             -delta
         );
     }
@@ -128,11 +149,12 @@ fn lumped_params() -> MugParameters {
         preheat_temp_c: 90.0,
         h_conv: 10.0,
         emissivity: MugMaterial::Ceramic.emissivity(),
-        exposure_pct: 0.2,
+        exposure: 0.2,
     }
 }
 
 #[test]
+#[ignore = "timing-sensitive; run with make bench"]
 fn perf_lumped_numerical() {
     let params = lumped_params();
     let med = bench(|| {
@@ -142,6 +164,7 @@ fn perf_lumped_numerical() {
 }
 
 #[test]
+#[ignore = "timing-sensitive; run with make bench"]
 fn perf_lumped_analytical() {
     let params = lumped_params();
     let med = bench(|| {
@@ -165,13 +188,15 @@ fn heat_eq_params() -> SphereHeatParams {
         shell_material: HeatMaterial::ceramic(),
         liquid_material: HeatMaterial::water(),
         medium_material: HeatMaterial::air(),
-        evaporation_factor: 0.0,
+        exposure: 0.0,
         convection_coeff: 10.0,
         r_max_multiplier: chart_max_r_cm / outer_r_cm,
+        outer_boundary: OuterBoundary::Ambient,
     }
 }
 
 #[test]
+#[ignore = "timing-sensitive; run with make bench"]
 fn perf_heat_equation_numerical() {
     let params = heat_eq_params();
     let med = bench(|| {
@@ -181,18 +206,25 @@ fn perf_heat_equation_numerical() {
 }
 
 #[test]
+#[ignore = "timing-sensitive; run with make bench"]
 fn perf_heat_equation_analytical() {
-    let three_params = ThreeRegionParams::default();
+    // The panel's default analytical run: 180 ml, 5 mm ceramic, lid 20% open.
+    let heat = heat_eq_params();
+    let mug = ThreeRegionMug {
+        r_inner: heat.inner_radius_m,
+        r_outer: heat.outer_radius_m,
+        r_max: heat.outer_radius_m * 10.0,
+        shell: heat.shell_material,
+        liquid_temp_c: 90.0,
+        shell_temp_c: 80.0,
+        room_temp_c: 22.0,
+        h_conv: 20.0,
+        exposure: 0.2,
+        num_modes: 50,
+    };
     let med = bench(|| {
-        let modes = compute_eigenmodes(&three_params);
-        let _ = simulate_three_region_analytical(
-            &three_params,
-            &modes,
-            3600.0,
-            100,
-            200,
-            three_params.r_max,
-        );
+        let _ =
+            simulate_three_region_relinearised(&mug, ANALYTICAL_SEGMENTS, 3600.0, 100, 200, 0.10);
     });
     assert_perf("heat_equation_analytical", med);
 }

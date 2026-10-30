@@ -1,4 +1,4 @@
-use crate::physics::ComparisonData;
+use crate::physics::{extra_time, ComparisonData, ExtraTime};
 use crate::storage::{display_temp as fmt_temp, format_minutes};
 use leptos::*;
 
@@ -22,6 +22,23 @@ pub fn ComparisonMetrics(
         }
     };
 
+    // A missing crossing is a real answer: the coffee never got undrinkable.
+    let display_crossing = move |crossing: Option<f64>| -> String {
+        match crossing {
+            Some(minutes) => display_time(minutes),
+            None => format!("stays above for the whole {} min", duration_minutes.get()),
+        }
+    };
+
+    // Bars show time spent drinkable; no crossing means the whole run.
+    let bar_width = move |crossing: Option<f64>| -> String {
+        let fraction = match crossing {
+            Some(minutes) => minutes / duration_minutes.get() as f64,
+            None => 1.0,
+        };
+        format!("width: {}%", (fraction * 100.0).min(100.0))
+    };
+
     view! {
         <div class="metrics">
             <div class="metric">
@@ -41,10 +58,16 @@ pub fn ComparisonMetrics(
             </div>
         </div>
         <p class="metrics-note">
-            {move || format!("(Average for first {}, until cold mug drops below {})",
-                display_time(metrics.get().crossing_time_cold),
-                display_temp(min_drinkable.get())
-            )}
+            {move || match metrics.get().crossing_time_cold {
+                Some(minutes) => format!("(Average for first {}, until cold mug drops below {})",
+                    display_time(minutes),
+                    display_temp(min_drinkable.get())
+                ),
+                None => format!("(Average for the whole {} min; cold mug never drops below {})",
+                    duration_minutes.get(),
+                    display_temp(min_drinkable.get())
+                ),
+            }}
         </p>
 
         <div class="drinkable-time">
@@ -53,16 +76,16 @@ pub fn ComparisonMetrics(
                 <div class="time-bar cold">
                     <div
                         class="time-fill"
-                        style=move || format!("width: {}%", (metrics.get().crossing_time_cold / duration_minutes.get() as f64 * 100.0).min(100.0))
+                        style=move || bar_width(metrics.get().crossing_time_cold)
                     ></div>
-                    <span>{move || display_time(metrics.get().crossing_time_cold)}</span>
+                    <span>{move || display_crossing(metrics.get().crossing_time_cold)}</span>
                 </div>
                 <div class="time-bar hot">
                     <div
                         class="time-fill"
-                        style=move || format!("width: {}%", (metrics.get().crossing_time_hot / duration_minutes.get() as f64 * 100.0).min(100.0))
+                        style=move || bar_width(metrics.get().crossing_time_hot)
                     ></div>
-                    <span>{move || display_time(metrics.get().crossing_time_hot)}</span>
+                    <span>{move || display_crossing(metrics.get().crossing_time_hot)}</span>
                 </div>
             </div>
             <div class="time-labels">
@@ -70,17 +93,20 @@ pub fn ComparisonMetrics(
                 <span class="hot-label">"Preheated"</span>
                 <span class="time-diff">{move || {
                     let m = metrics.get();
-                    if m.crossing_time_hot >= max_sim_minutes - 0.5 {
-                        return String::new();
+                    let duration = duration_minutes.get() as f64;
+                    match extra_time(m.crossing_time_cold, m.crossing_time_hot, duration) {
+                        Some(ExtraTime::Exact(diff)) if diff > 0.5 => {
+                            let pct = match m.crossing_time_cold {
+                                Some(cold) if cold > 0.5 => format!(" (+{:.0}%)", diff / cold * 100.0),
+                                _ => String::new(),
+                            };
+                            format!("+{}{}", format_minutes(diff), pct)
+                        }
+                        Some(ExtraTime::AtLeast(diff)) if diff > 0.5 => {
+                            format!("at least +{}", format_minutes(diff))
+                        }
+                        _ => String::new(),
                     }
-                    let diff = m.crossing_time_hot - m.crossing_time_cold;
-                    if diff <= 0.5 { return String::new(); }
-                    let pct = if m.crossing_time_cold > 0.5 {
-                        format!(" (+{:.0}%)", diff / m.crossing_time_cold * 100.0)
-                    } else {
-                        String::new()
-                    };
-                    format!("+{}{}", format_minutes(diff), pct)
                 }}</span>
             </div>
         </div>

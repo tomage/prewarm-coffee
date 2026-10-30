@@ -1,66 +1,36 @@
-use super::{MugParameters, CoolingDataPoint};
-
-const STEFAN_BOLTZMANN: f64 = 5.670_374e-8; // W/(m²·K⁴)
-const WATER_EMISSIVITY: f64 = 0.96;
-const LATENT_HEAT_VAPORIZATION: f64 = 2.26e6; // J/kg
-const R_VAPOR: f64 = 461.5; // J/(kg·K)
-const RHO_AIR: f64 = 1.18; // kg/m³
-const CP_AIR: f64 = 1005.0; // J/(kg·K)
-const RELATIVE_HUMIDITY: f64 = 0.50;
-const EVAP_ENHANCEMENT: f64 = 2.5;
+use super::constants::{CELSIUS_TO_KELVIN, STEFAN_BOLTZMANN};
+use super::surface::open_top_loss;
+use super::{CoolingDataPoint, MugParameters};
 
 /// Re-linearize every this many minutes. Shorter segments improve accuracy
 /// at the cost of more eigenvalue decompositions. 0.2 min (= record interval)
 /// gives < 0.15°C agreement with the numerical solver.
 const SEGMENT_MINUTES: f64 = 0.2;
 
-fn saturation_vapor_pressure(t_celsius: f64) -> f64 {
-    610.78 * (17.27 * t_celsius / (t_celsius + 237.3)).exp()
-}
-
-/// Compute linearized environment heat loss coefficients at the given temperatures.
-/// Returns (h_coffee_env, h_mug_env) in W/K.
+/// Linearised environment losses at the given temperatures.
+///
+/// Returns the coffee's open-top loss as `(h_top_w_per_k, t_ref_c)` — a loss
+/// `h_top·(T_coffee − t_ref)` in W, with `t_ref` below room while the coffee
+/// evaporates — and the mug's outer-wall coefficient toward room in W/K.
 fn linearized_env_coefficients(
+    params: &MugParameters,
     t_coffee_c: f64,
     t_mug_c: f64,
-    t_room_c: f64,
-    h_conv: f64,
-    mug_emissivity: f64,
-    a_top: f64,
-    a_outer: f64,
-    exposure: f64,
-) -> (f64, f64) {
-    let t_room_k = t_room_c + 273.15;
-    let t_coffee_k = t_coffee_c + 273.15;
-    let t_mug_k = t_mug_c + 273.15;
+) -> (f64, f64, f64) {
+    let t_room_c = params.room_temp_c;
+    let a_outer = params.outer_surface_area_m2();
 
-    // Base convection — top surface scaled by lid opening
-    let mut h_coffee_env = exposure * h_conv * a_top;
-    let mut h_mug_env = h_conv * a_outer;
+    // Open top: convection, radiation and the evaporation tangent at the
+    // current coffee temperature, over the open part of the top
+    let top = open_top_loss(t_coffee_c, t_room_c, params.h_conv);
+    let h_top = params.open_top_area_m2() * top.h;
 
-    // Linearized radiation: h_rad = 4 * epsilon * sigma * T_m^3
-    let t_m_coffee = 0.5 * (t_coffee_k + t_room_k);
-    h_coffee_env += exposure * 4.0 * WATER_EMISSIVITY * STEFAN_BOLTZMANN * t_m_coffee.powi(3) * a_top;
+    // Mug outer walls: convection plus linearised radiation h_rad = 4·ε·σ·T_m³
+    let t_m_mug = 0.5 * (t_mug_c + t_room_c) + CELSIUS_TO_KELVIN;
+    let h_mug_env =
+        (params.h_conv + 4.0 * params.emissivity * STEFAN_BOLTZMANN * t_m_mug.powi(3)) * a_outer;
 
-    let t_m_mug = 0.5 * (t_mug_k + t_room_k);
-    h_mug_env += 4.0 * mug_emissivity * STEFAN_BOLTZMANN * t_m_mug.powi(3) * a_outer;
-
-    // Linearized evaporation — scaled by lid opening
-    let h_mass = h_conv / (RHO_AIR * CP_AIR);
-    let t_ref = t_coffee_c; // linearize at current coffee temperature
-    let t_ref_k = t_ref + 273.15;
-    let rho_v_ref = saturation_vapor_pressure(t_ref) / (R_VAPOR * t_ref_k);
-    let rho_v_ambient = RELATIVE_HUMIDITY * saturation_vapor_pressure(t_room_c) / (R_VAPOR * t_room_k);
-    if rho_v_ref > rho_v_ambient {
-        let q_evap_ref = EVAP_ENHANCEMENT * h_mass * a_top * LATENT_HEAT_VAPORIZATION
-            * (rho_v_ref - rho_v_ambient);
-        let delta_t = t_ref - t_room_c;
-        if delta_t > 1.0 {
-            h_coffee_env += exposure * q_evap_ref / delta_t;
-        }
-    }
-
-    (h_coffee_env, h_mug_env)
+    (h_top, top.t_ref, h_mug_env)
 }
 
 /// Analytical (closed-form) lumped capacitance cooling simulation.
@@ -74,21 +44,21 @@ fn linearized_env_coefficients(
 /// ```
 ///
 /// where a,b,c,d are rate constants derived from the same heat transfer
-/// coefficients used in the numerical solver. The eigenvalues give the two
-/// exponential decay modes, and the solution is a superposition of these modes.
+/// coefficients used in the numerical solver. The open-top loss pulls the
+/// coffee toward a reference temperature below room (evaporation continues at
+/// room temperature), so the system is affine, `x′ = M·x + s`, and each segment
+/// solves as `x(t) = x_ss + e^{Mt}(x₀ − x_ss)` with `x_ss = −M⁻¹s`. The
+/// eigenvalues of M give the two exponential decay modes.
 ///
 /// To handle the nonlinear evaporation and radiation terms, the solver uses
-/// **piecewise linearization**: the coefficients are re-linearized at the
-/// current temperature every `SEGMENT_MINUTES`, and the eigenvalue problem
-/// is re-solved for each segment. This keeps the analytical structure while
+/// **piecewise linearization**: the losses are re-linearized at the segment's
+/// start temperatures every `SEGMENT_MINUTES` (evaporation by its tangent),
+/// and the eigenvalue problem is re-solved for each segment. This keeps the analytical structure while
 /// closely tracking the nonlinear numerical solution.
-pub fn simulate_lumped_analytical(params: &MugParameters, duration_minutes: usize) -> Vec<CoolingDataPoint> {
-    // Single-body mode: when exposure >= 1.0, there is no mug — coffee is a
-    // free-standing cylinder losing heat from all surfaces.
-    if params.exposure_pct >= 1.0 {
-        return simulate_single_body_analytical(params, duration_minutes);
-    }
-
+pub fn simulate_lumped_analytical(
+    params: &MugParameters,
+    duration_minutes: usize,
+) -> Vec<CoolingDataPoint> {
     let record_interval = 0.2; // Same as numerical: every 0.2 minutes
     let mut results = Vec::with_capacity((duration_minutes as f64 / record_interval) as usize + 1);
 
@@ -96,16 +66,17 @@ pub fn simulate_lumped_analytical(params: &MugParameters, duration_minutes: usiz
     let c_coffee = params.coffee_thermal_mass();
     let c_mug = params.mug_thermal_mass();
 
-    // Geometry and material constants (fixed for the whole simulation)
-    let k_eff = 2.0 * params.material.thermal_conductivity();
-    let a_top = params.top_surface_area_m2();
-    let a_outer = params.outer_surface_area_m2();
-    let mug_emissivity = params.emissivity;
+    // Material constants (fixed for the whole simulation)
+    let conductance = params.coffee_mug_conductance();
     let t_room = params.room_temp_c;
 
     // Current temperatures — updated at each segment boundary
     let mut cur_coffee = params.coffee_temp_c;
-    let mut cur_mug = if params.preheated { params.preheat_temp_c } else { t_room };
+    let mut cur_mug = if params.preheated {
+        params.preheat_temp_c
+    } else {
+        t_room
+    };
 
     // Record initial state
     results.push(CoolingDataPoint {
@@ -122,16 +93,25 @@ pub fn simulate_lumped_analytical(params: &MugParameters, duration_minutes: usiz
         let seg_end = (time_min + SEGMENT_MINUTES).min(end_min);
 
         // Linearize at current temperatures
-        let (h_coffee_env, h_mug_env) = linearized_env_coefficients(
-            cur_coffee, cur_mug, t_room, params.h_conv,
-            mug_emissivity, a_top, a_outer, params.exposure_pct,
-        );
+        let (h_top, t_ref_top, h_mug_env) =
+            linearized_env_coefficients(params, cur_coffee, cur_mug);
 
         // Rate constants (1/s)
-        let a = k_eff / c_coffee;
-        let b = h_coffee_env / c_coffee;
-        let c = k_eff / c_mug;
+        let a = conductance / c_coffee;
+        let b = h_top / c_coffee;
+        let c = conductance / c_mug;
         let d = h_mug_env / c_mug;
+
+        // Relative to room, x = (u, v) obeys x′ = M·x + (b·u_ref, 0): the open
+        // top pulls the coffee toward t_ref, not room. Its steady state
+        // x_ss = −M⁻¹·(b·u_ref, 0); the deviation x − x_ss decays by M's modes.
+        let source = b * (t_ref_top - t_room);
+        let (u_ss, v_ss) = if source == 0.0 {
+            (0.0, 0.0)
+        } else {
+            let det = (a + b) * (c + d) - a * c;
+            (source * (c + d) / det, source * c / det)
+        };
 
         // Eigenvalues of M = [-(a+b), a; c, -(c+d)]
         let trace = a + b + c + d;
@@ -144,9 +124,9 @@ pub fn simulate_lumped_analytical(params: &MugParameters, duration_minutes: usiz
         let r1 = (lambda1 + a + b) / a;
         let r2 = (lambda2 + a + b) / a;
 
-        // Initial conditions for this segment (relative to room temp)
-        let u0 = cur_coffee - t_room;
-        let v0 = cur_mug - t_room;
+        // Initial deviation from the segment's steady state
+        let u0 = cur_coffee - t_room - u_ss;
+        let v0 = cur_mug - t_room - v_ss;
 
         // Solve for coefficients
         let coeff2 = (v0 - u0 * r1) / (r2 - r1);
@@ -159,8 +139,8 @@ pub fn simulate_lumped_analytical(params: &MugParameters, duration_minutes: usiz
             let e1 = (lambda1 * dt_sec).exp();
             let e2 = (lambda2 * dt_sec).exp();
 
-            let coffee_temp = coeff1 * e1 + coeff2 * e2 + t_room;
-            let mug_temp = coeff1 * r1 * e1 + coeff2 * r2 * e2 + t_room;
+            let coffee_temp = coeff1 * e1 + coeff2 * e2 + t_room + u_ss;
+            let mug_temp = coeff1 * r1 * e1 + coeff2 * r2 * e2 + t_room + v_ss;
 
             results.push(CoolingDataPoint {
                 time_minutes: (t_local * 10.0).round() / 10.0, // round to 0.1 to avoid float drift
@@ -175,103 +155,8 @@ pub fn simulate_lumped_analytical(params: &MugParameters, duration_minutes: usiz
         let dt_seg_sec = (seg_end - time_min) * 60.0;
         let e1 = (lambda1 * dt_seg_sec).exp();
         let e2 = (lambda2 * dt_seg_sec).exp();
-        cur_coffee = coeff1 * e1 + coeff2 * e2 + t_room;
-        cur_mug = coeff1 * r1 * e1 + coeff2 * r2 * e2 + t_room;
-
-        time_min = seg_end;
-    }
-
-    results
-}
-
-/// Compute linearized effective heat loss coefficient for a bare coffee cylinder.
-/// Convection and radiation act on `a_total` (all surfaces); evaporation only
-/// acts on `a_top` (the liquid-air interface at the top of the cylinder).
-/// Returns h_eff in W/K.
-fn linearized_single_body_coefficient(
-    t_coffee_c: f64,
-    t_room_c: f64,
-    h_conv: f64,
-    a_total: f64,
-    a_top: f64,
-) -> f64 {
-    let t_room_k = t_room_c + 273.15;
-    let t_coffee_k = t_coffee_c + 273.15;
-
-    // Convection from all surfaces
-    let mut h_eff = h_conv * a_total;
-
-    // Linearized radiation from all surfaces: h_rad = 4 * ε * σ * T_m³ * A
-    let t_m = 0.5 * (t_coffee_k + t_room_k);
-    h_eff += 4.0 * WATER_EMISSIVITY * STEFAN_BOLTZMANN * t_m.powi(3) * a_total;
-
-    // Linearized evaporation from top surface only
-    let h_mass = h_conv / (RHO_AIR * CP_AIR);
-    let rho_v_ref = saturation_vapor_pressure(t_coffee_c) / (R_VAPOR * t_coffee_k);
-    let rho_v_ambient = RELATIVE_HUMIDITY * saturation_vapor_pressure(t_room_c) / (R_VAPOR * t_room_k);
-    if rho_v_ref > rho_v_ambient {
-        let q_evap_ref = EVAP_ENHANCEMENT * h_mass * a_top * LATENT_HEAT_VAPORIZATION
-            * (rho_v_ref - rho_v_ambient);
-        let delta_t = t_coffee_c - t_room_c;
-        if delta_t > 1.0 {
-            h_eff += q_evap_ref / delta_t;
-        }
-    }
-
-    h_eff
-}
-
-/// Single-body analytical simulation: coffee cylinder with no mug.
-/// Piecewise linearization with single exponential decay per segment.
-fn simulate_single_body_analytical(params: &MugParameters, duration_minutes: usize) -> Vec<CoolingDataPoint> {
-    let record_interval = 0.2;
-    let mut results = Vec::with_capacity((duration_minutes as f64 / record_interval) as usize + 1);
-
-    let c_coffee = params.coffee_thermal_mass();
-    let a_total = params.coffee_surface_area_m2();
-    let a_top = params.top_surface_area_m2();
-    let t_room = params.room_temp_c;
-    let mut cur_coffee = params.coffee_temp_c;
-
-    results.push(CoolingDataPoint {
-        time_minutes: 0.0,
-        coffee_temp_c: cur_coffee,
-        mug_temp_c: t_room,
-    });
-
-    let mut time_min = 0.0;
-    let end_min = duration_minutes as f64;
-
-    while time_min < end_min - 1e-9 {
-        let seg_end = (time_min + SEGMENT_MINUTES).min(end_min);
-
-        // Linearize at current temperature
-        let h_eff = linearized_single_body_coefficient(
-            cur_coffee, t_room, params.h_conv, a_total, a_top,
-        );
-
-        // Decay rate (1/s): λ = h_eff / C_coffee
-        let lambda = -(h_eff / c_coffee);
-        let u0 = cur_coffee - t_room;
-
-        // Emit data points within this segment
-        let mut t_local = time_min + record_interval;
-        while t_local <= seg_end + 1e-9 && t_local <= end_min + 1e-9 {
-            let dt_sec = (t_local - time_min) * 60.0;
-            let coffee_temp = u0 * (lambda * dt_sec).exp() + t_room;
-
-            results.push(CoolingDataPoint {
-                time_minutes: (t_local * 10.0).round() / 10.0,
-                coffee_temp_c: coffee_temp,
-                mug_temp_c: t_room,
-            });
-
-            t_local += record_interval;
-        }
-
-        // Advance to segment boundary
-        let dt_seg_sec = (seg_end - time_min) * 60.0;
-        cur_coffee = u0 * (lambda * dt_seg_sec).exp() + t_room;
+        cur_coffee = coeff1 * e1 + coeff2 * e2 + t_room + u_ss;
+        cur_mug = coeff1 * r1 * e1 + coeff2 * r2 * e2 + t_room + v_ss;
 
         time_min = seg_end;
     }

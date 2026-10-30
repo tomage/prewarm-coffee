@@ -1,3 +1,5 @@
+use super::constants::{H_WATER_SIDE, WATER_DENSITY, WATER_SPECIFIC_HEAT};
+
 /// Material types for coffee mugs
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MugMaterial {
@@ -60,7 +62,7 @@ impl MugMaterial {
 }
 
 /// Parameters defining a mug and its environment
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MugParameters {
     pub material: MugMaterial,
     pub volume_ml: f64,
@@ -74,9 +76,10 @@ pub struct MugParameters {
     pub h_conv: f64,
     /// Surface emissivity (0–1). Defaults to material value but can be overridden.
     pub emissivity: f64,
-    /// Lid opening fraction (0.0–1.0). 0 = lid on, 1 = fully open.
-    /// Controls evaporation, top-surface convection, and radiation from the coffee surface.
-    pub exposure_pct: f64,
+    /// Lid openness (0.0–1.0): 0 = sealed lid, 1 = open mug with no lid.
+    /// The mug is always present; exposure sets the open share of the top,
+    /// which carries evaporation, convection and radiation from the coffee.
+    pub exposure: f64,
 }
 
 impl MugParameters {
@@ -110,9 +113,8 @@ impl MugParameters {
 
     /// Calculate the thermal mass of the coffee in J/K
     pub fn coffee_thermal_mass(&self) -> f64 {
-        // Water: specific heat = 4186 J/(kg·K), density ≈ 1 kg/L
-        let coffee_mass_kg = self.volume_ml * 1e-3; // 1 ml water ≈ 1 g
-        coffee_mass_kg * 4186.0
+        let coffee_mass_kg = self.volume_ml * 1e-6 * WATER_DENSITY;
+        coffee_mass_kg * WATER_SPECIFIC_HEAT
     }
 
     /// Top (open coffee) surface area in m²
@@ -120,6 +122,33 @@ impl MugParameters {
         let inner_volume_m3 = self.volume_ml * 1e-6;
         let inner_radius_m = (inner_volume_m3 / (2.0 * std::f64::consts::PI)).powf(1.0 / 3.0);
         std::f64::consts::PI * inner_radius_m.powi(2)
+    }
+
+    /// Open coffee surface in m²: the lid opening's share of the top.
+    pub fn open_top_area_m2(&self) -> f64 {
+        self.exposure * self.top_surface_area_m2()
+    }
+
+    /// Inner wall area wetted by the coffee (side + base) in m², for the
+    /// h = 2r cylinder: 2πr·2r + πr² = 5πr².
+    pub fn wetted_area_m2(&self) -> f64 {
+        let inner_volume_m3 = self.volume_ml * 1e-6;
+        let inner_radius_m = (inner_volume_m3 / (2.0 * std::f64::consts::PI)).powf(1.0 / 3.0);
+        let height_m = 2.0 * inner_radius_m;
+        let side = 2.0 * std::f64::consts::PI * inner_radius_m * height_m;
+        let base = std::f64::consts::PI * inner_radius_m.powi(2);
+        side + base
+    }
+
+    /// Lumped coffee-to-mug conductance in W/K: the water-side film and half
+    /// the wall's conduction resistance in series. Half, because the lumped mug
+    /// temperature is the wall's mean, so conduction runs to the mid-plane.
+    pub fn coffee_mug_conductance(&self) -> f64 {
+        let area = self.wetted_area_m2();
+        let wall_m = self.wall_thickness_mm * 1e-3;
+        let r_film = 1.0 / (H_WATER_SIDE * area);
+        let r_wall = (wall_m / 2.0) / (self.material.thermal_conductivity() * area);
+        1.0 / (r_film + r_wall)
     }
 
     /// Outer mug surface area (side + bottom) in m²
@@ -139,15 +168,6 @@ impl MugParameters {
     pub fn surface_area_m2(&self) -> f64 {
         self.top_surface_area_m2() + self.outer_surface_area_m2()
     }
-
-    /// Total surface area of bare coffee cylinder (no mug) in m²
-    /// Top + bottom + sides = 2πr² + 2πr×h (with h = 2r → 6πr²)
-    pub fn coffee_surface_area_m2(&self) -> f64 {
-        let inner_volume_m3 = self.volume_ml * 1e-6;
-        let inner_radius_m = (inner_volume_m3 / (2.0 * std::f64::consts::PI)).powf(1.0 / 3.0);
-        6.0 * std::f64::consts::PI * inner_radius_m.powi(2)
-    }
-
 }
 
 #[cfg(test)]
@@ -166,7 +186,7 @@ mod tests {
             preheat_temp_c: 90.0,
             h_conv: 10.0,
             emissivity: MugMaterial::Ceramic.emissivity(),
-            exposure_pct: 0.2,
+            exposure: 0.2,
         };
 
         let mass = params.mug_mass_kg();
@@ -176,5 +196,51 @@ mod tests {
             "Mug mass {} kg seems unreasonable",
             mass
         );
+    }
+
+    fn params(material: MugMaterial, wall_mm: f64) -> MugParameters {
+        MugParameters {
+            material,
+            volume_ml: 350.0,
+            wall_thickness_mm: wall_mm,
+            coffee_temp_c: 95.0,
+            room_temp_c: 22.0,
+            preheated: false,
+            preheat_temp_c: 90.0,
+            h_conv: 10.0,
+            emissivity: material.emissivity(),
+            exposure: 0.2,
+        }
+    }
+
+    #[test]
+    fn conductance_scales_with_conductivity() {
+        let g = |m| params(m, 5.0).coffee_mug_conductance();
+        assert!(g(MugMaterial::StainlessSteel) > g(MugMaterial::Ceramic));
+        assert!(g(MugMaterial::Ceramic) > g(MugMaterial::Plastic));
+    }
+
+    #[test]
+    fn conductance_decreases_with_thickness() {
+        let thin = params(MugMaterial::Ceramic, 2.0).coffee_mug_conductance();
+        let thick = params(MugMaterial::Ceramic, 8.0).coffee_mug_conductance();
+        assert!(thin > thick);
+    }
+
+    #[test]
+    fn conductance_bounded_by_water_side() {
+        let p = params(MugMaterial::StainlessSteel, 5.0);
+        assert!(p.coffee_mug_conductance() < H_WATER_SIDE * p.wetted_area_m2());
+    }
+
+    #[test]
+    fn conductance_matches_hand_computation() {
+        // r = (350e-6 / 2π)^(1/3); A = 5πr²; G = 1/(1/(500·A) + 0.0025/(1·A))
+        let r = (350e-6_f64 / (2.0 * std::f64::consts::PI)).powf(1.0 / 3.0);
+        let area = 5.0 * std::f64::consts::PI * r * r;
+        let expected = area / (1.0 / 500.0 + 0.0025 / 1.0);
+        let p = params(MugMaterial::Ceramic, 5.0);
+        assert!((p.wetted_area_m2() - area).abs() / area < 1e-9);
+        assert!((p.coffee_mug_conductance() - expected).abs() / expected < 1e-9);
     }
 }

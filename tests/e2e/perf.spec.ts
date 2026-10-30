@@ -21,6 +21,7 @@ const routes: { path: string; name: string; hasSimulation?: boolean }[] = [
   { path: "/theory/lumped", name: "Theory: Lumped", hasSimulation: true },
   { path: "/theory/lumped?solver=numerical", name: "Theory: Lumped (Numerical)", hasSimulation: true },
   { path: "/theory/heat-equation", name: "Theory: Heat Equation", hasSimulation: true },
+  { path: "/theory/heat-equation?solver=analytical", name: "Theory: Heat Equation (Analytical)", hasSimulation: true },
   { path: "/theory/heat-equation?solver=numerical", name: "Theory: Heat Equation (Numerical)", hasSimulation: true },
 ];
 
