@@ -1,4 +1,4 @@
-use leptos::*;
+use leptos::prelude::*;
 use std::cell::Cell;
 
 /// Settings of the heat-equation and Compare panels' own controls and views.
@@ -48,35 +48,35 @@ impl PanelSettings {
 
     fn new() -> Self {
         Self {
-            num_snapshots: create_rw_signal(DEFAULT_NUM_SNAPSHOTS),
-            num_modes: create_rw_signal(DEFAULT_NUM_MODES),
-            r_max_mult: create_rw_signal(DEFAULT_R_MAX_MULT),
-            compare_use_preheated: create_rw_signal(DEFAULT_COMPARE_USE_PREHEATED),
-            selected_time_idx: create_rw_signal(DEFAULT_SELECTED_TIME_IDX),
+            num_snapshots: RwSignal::new(DEFAULT_NUM_SNAPSHOTS),
+            num_modes: RwSignal::new(DEFAULT_NUM_MODES),
+            r_max_mult: RwSignal::new(DEFAULT_R_MAX_MULT),
+            compare_use_preheated: RwSignal::new(DEFAULT_COMPARE_USE_PREHEATED),
+            selected_time_idx: RwSignal::new(DEFAULT_SELECTED_TIME_IDX),
         }
     }
 
-    /// Restore the defaults as one update.
+    /// Restore the defaults as one update: effects run after the current
+    /// task, so the ones reading these signals see all five sets at once.
     pub fn reset(&self) {
-        batch(|| {
-            self.num_snapshots.set(DEFAULT_NUM_SNAPSHOTS);
-            self.num_modes.set(DEFAULT_NUM_MODES);
-            self.r_max_mult.set(DEFAULT_R_MAX_MULT);
-            self.compare_use_preheated
-                .set(DEFAULT_COMPARE_USE_PREHEATED);
-            self.selected_time_idx.set(DEFAULT_SELECTED_TIME_IDX);
-        });
+        self.num_snapshots.set(DEFAULT_NUM_SNAPSHOTS);
+        self.num_modes.set(DEFAULT_NUM_MODES);
+        self.r_max_mult.set(DEFAULT_R_MAX_MULT);
+        self.compare_use_preheated
+            .set(DEFAULT_COMPARE_USE_PREHEATED);
+        self.selected_time_idx.set(DEFAULT_SELECTED_TIME_IDX);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reactive_test::{test_owner, tick};
     use std::rc::Rc;
 
     #[test]
     fn reset_restores_defaults_in_one_update() {
-        let rt = create_runtime();
+        let _owner = test_owner();
         let s = PanelSettings::new();
         s.num_snapshots.set(20);
         s.num_modes.set(3);
@@ -86,7 +86,7 @@ mod tests {
 
         let runs = Rc::new(Cell::new(0));
         let counter = runs.clone();
-        create_effect(move |_| {
+        Effect::new(move |_| {
             s.num_snapshots.get();
             s.num_modes.get();
             s.r_max_mult.get();
@@ -94,15 +94,16 @@ mod tests {
             s.selected_time_idx.get();
             counter.set(counter.get() + 1);
         });
+        tick();
         assert_eq!(runs.get(), 1);
 
         s.reset();
+        tick();
         assert_eq!(runs.get(), 2);
         assert_eq!(s.num_snapshots.get_untracked(), 100);
         assert_eq!(s.num_modes.get_untracked(), 50);
         assert_eq!(s.r_max_mult.get_untracked(), 10.0);
         assert!(s.compare_use_preheated.get_untracked());
         assert_eq!(s.selected_time_idx.get_untracked(), 2);
-        rt.dispose();
     }
 }

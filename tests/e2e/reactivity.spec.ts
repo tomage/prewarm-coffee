@@ -76,7 +76,10 @@ for (const { tab, metrics, line } of TABS) {
     const chartLine = page.locator(line);
     await slider.focus();
 
-    // ~20 inputs/s for 1 s, sampling the chart after each input.
+    // ~20 inputs/s for 1 s, sampling the chart after each input. The polyline's
+    // points come from the throttled solve and an axis derived from the same
+    // throttled inputs, so they change only when the throttle publishes: a
+    // throttle that stops publishing during a drag leaves them frozen.
     const seen = new Set<string | null>();
     for (let i = 0; i < 20; i++) {
       await page.keyboard.press("ArrowRight");
@@ -87,3 +90,44 @@ for (const { tab, metrics, line } of TABS) {
     expect(seen.size, "chart does not freeze during a drag").toBeGreaterThanOrEqual(3);
   });
 }
+
+// A tab switch while the throttled solve is still catching up unmounts the
+// dragged panel mid-flight: its pending timers and effects must die with it,
+// and the newly mounted panel must solve the final inputs from scratch.
+test("tab_switch_mid_drag_settles", async ({ page, context }) => {
+  const errors: string[] = [];
+  page.on("console", (msg) => {
+    if (msg.type() === "error") errors.push(msg.text());
+  });
+  page.on("pageerror", (err) => errors.push(err.message));
+
+  await seededTab(page, "heat_equation");
+  const { metrics, line } = TABS.find((t) => t.tab === "compare")!;
+
+  await page.locator(".desktop-sim #coffee-temp").focus();
+  for (let i = 0; i < 5; i++) {
+    await page.keyboard.press("ArrowRight");
+  }
+  await page.locator(".desktop-sim .solver-toggle button", { hasText: "Compare" }).click();
+  await expect(page.locator('.desktop-sim label[for="coffee-temp"]')).toContainText("75");
+
+  // The fresh load reads the persisted settings, so wait for the save first.
+  await expect
+    .poll(() =>
+      page.evaluate((key) => {
+        const stored = JSON.parse(localStorage.getItem(key) ?? "{}");
+        return [stored.coffee_temp_c, stored.active_tab];
+      }, SETTINGS_KEY)
+    )
+    .toEqual([75, "compare"]);
+
+  const freshPage = await context.newPage();
+  await openTab(freshPage, "compare");
+  await expect(freshPage.locator('.desktop-sim label[for="coffee-temp"]')).toContainText("75");
+  const fresh = await restingState(freshPage, metrics, line);
+  await freshPage.close();
+  expect(fresh.points, "the fresh load plotted a line").toBeTruthy();
+
+  await expect.poll(() => restingState(page, metrics, line)).toEqual(fresh);
+  expect(errors).toEqual([]);
+});

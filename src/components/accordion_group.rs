@@ -1,4 +1,4 @@
-use leptos::*;
+use leptos::prelude::*;
 
 #[component]
 pub fn AccordionGroup(
@@ -6,13 +6,13 @@ pub fn AccordionGroup(
     #[prop(default = false)] initially_open: bool,
     children: Children,
 ) -> impl IntoView {
-    let (is_open, set_is_open) = create_signal(initially_open);
+    let (is_open, set_is_open) = signal(initially_open);
 
     view! {
         <div class="accordion-group" class:open=is_open>
             <button
                 class="accordion-header"
-                attr:aria-expanded=move || is_open.get().to_string()
+                aria-expanded=move || is_open.get().to_string()
                 on:click=move |_| set_is_open.update(|v| *v = !*v)
             >
                 <span class="accordion-title">{title}</span>

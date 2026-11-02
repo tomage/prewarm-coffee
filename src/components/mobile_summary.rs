@@ -1,6 +1,6 @@
 use crate::physics::{extra_time, ExtraTime};
 use crate::storage::format_minutes;
-use leptos::*;
+use leptos::prelude::*;
 
 #[component]
 pub fn MobileSummaryBar(

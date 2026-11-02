@@ -1,5 +1,6 @@
-use leptos::*;
-use leptos_router::{use_location, A};
+use leptos::prelude::*;
+use leptos_router::components::A;
+use leptos_router::hooks::use_location;
 
 #[component]
 pub fn NavBar() -> impl IntoView {
@@ -18,11 +19,11 @@ pub fn NavBar() -> impl IntoView {
     view! {
         <nav class="site-nav">
             <div class="site-nav-inner">
-                <A href="/" class="nav-brand">"Prewarm"</A>
+                <A href="/" attr:class="nav-brand">"Prewarm"</A>
                 <div class="nav-links">
-                    <A href="/" class=move || link_class("/")>"Home"</A>
-                    <A href="/theory" class=move || link_class("/theory")>"Theory"</A>
-                    <A href="/about" class=move || link_class("/about")>"About"</A>
+                    <A href="/" attr:class=move || link_class("/")>"Home"</A>
+                    <A href="/theory" attr:class=move || link_class("/theory")>"Theory"</A>
+                    <A href="/about" attr:class=move || link_class("/about")>"About"</A>
                 </div>
             </div>
         </nav>

@@ -1,7 +1,7 @@
 use crate::physics::constants::K_AIR;
 use crate::physics::HeatSnapshot;
 use crate::storage::c_to_f;
-use leptos::*;
+use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 // Profile chart coordinate constants (within SVG viewBox 0 0 500 240)
@@ -116,7 +116,7 @@ pub fn ProfileChart(
     set_selected_time_idx: WriteSignal<usize>,
 ) -> impl IntoView {
     // Hover state created internally
-    let (profile_hover, set_profile_hover) = create_signal(None::<(f64, f64)>);
+    let (profile_hover, set_profile_hover) = signal(None::<(f64, f64)>);
 
     view! {
         <div class="sim-viz">

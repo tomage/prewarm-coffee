@@ -1,5 +1,5 @@
-use leptos::*;
-use leptos_router::use_query_map;
+use leptos::prelude::*;
+use leptos_router::hooks::use_query_map;
 
 /// Create panel-local solver signals backed by a shared `RwSignal<bool>`.
 ///
@@ -15,7 +15,7 @@ pub fn create_solver_signals(
     WriteSignal<bool>,
 ) {
     let query = use_query_map();
-    let solver_override = query.with_untracked(|q| match q.get("solver").map(String::as_str) {
+    let solver_override = query.with_untracked(|q| match q.get("solver").as_deref() {
         Some("analytical") => Some(true),
         Some("numerical") => Some(false),
         _ => None,
@@ -24,7 +24,7 @@ pub fn create_solver_signals(
         shared.set(analytical);
     }
     let (use_analytical, set_use_analytical) = shared.split();
-    let (sim_ready, set_sim_ready) = create_signal(false);
+    let (sim_ready, set_sim_ready) = signal(false);
     (use_analytical, set_use_analytical, sim_ready, set_sim_ready)
 }
 
@@ -37,7 +37,7 @@ pub fn SolverToggle(
     sim_ready: Signal<bool>,
 ) -> impl IntoView {
     view! {
-        <div class="solver-toggle" attr:data-sim-ready=move || sim_ready.get()>
+        <div class="solver-toggle" data-sim-ready=move || sim_ready.get()>
             <button
                 class:active=move || use_analytical.get()
                 on:click=move |_| set_use_analytical.set(true)

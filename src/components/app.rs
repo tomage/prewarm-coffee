@@ -1,16 +1,18 @@
 use crate::components::overlay_history::forget_overlay_entry;
 use crate::components::{use_media_query, SimTab, SimulatorOverlay, MOBILE_QUERY};
 use crate::storage::SharedSettings;
-use leptos::*;
-use leptos_router::{use_query_map, A};
+use leptos::html;
+use leptos::prelude::*;
+use leptos_router::components::A;
+use leptos_router::hooks::use_query_map;
 
 #[component]
 pub fn App() -> impl IntoView {
     let settings = SharedSettings::instance();
     let active_tab = settings.active_tab;
 
-    let (show_overlay, set_show_overlay) = create_signal(false);
-    let open_sim_button = create_node_ref::<html::Button>();
+    let (show_overlay, set_show_overlay) = signal(false);
+    let open_sim_button = NodeRef::<html::Button>::new();
 
     // Exactly one simulator is mounted: the inline one, or on small screens
     // the entry card and its overlay. Leaving the small layout closes the
@@ -18,7 +20,7 @@ pub fn App() -> impl IntoView {
     // It leaves the overlay's history entry in place: stepping back over it
     // here would race the resize, so the next Back pops it instead.
     let is_mobile = use_media_query(MOBILE_QUERY);
-    create_effect(move |_| {
+    Effect::new(move |_| {
         if !is_mobile.get() {
             set_show_overlay.set(false);
         }
@@ -29,18 +31,22 @@ pub fn App() -> impl IntoView {
     on_cleanup(forget_overlay_entry);
 
     // A ?tab= link selects that tab. Set only when it differs: a set notifies
-    // even when unchanged, and the save effect would then write at startup.
+    // even when unchanged, which would re-render and re-solve for nothing.
+    // Applied once before the first render, so the page mounts the linked
+    // tab's panel rather than mounting the stored one and swapping (effects
+    // run only after the render); the effect follows later query changes.
     let query = use_query_map();
-    create_effect(move |_| {
-        let params = query.get();
-        if let Some(tab) = params.get("tab") {
+    let select_linked_tab = move |tab: Option<String>| {
+        if let Some(tab) = tab {
             if matches!(tab.as_str(), "lumped" | "heat_equation" | "compare")
-                && active_tab.with_untracked(|current| current != tab)
+                && active_tab.with_untracked(|current| *current != tab)
             {
-                active_tab.set(tab.to_string());
+                active_tab.set(tab);
             }
         }
-    });
+    };
+    select_linked_tab(query.with_untracked(|params| params.get("tab")));
+    Effect::new(move |_| select_linked_tab(query.with(|params| params.get("tab"))));
 
     let render_active_panel = move || SimTab::from_key(&active_tab.get()).panel(true);
 
@@ -109,9 +115,9 @@ pub fn App() -> impl IntoView {
                 </p>
 
                 {move || if is_mobile.get() {
-                    mobile_entry().into_view()
+                    mobile_entry().into_any()
                 } else {
-                    desktop_sim().into_view()
+                    desktop_sim().into_any()
                 }}
             </section>
 
@@ -142,11 +148,11 @@ pub fn App() -> impl IntoView {
             <section class="learn-more">
                 <h2>"Learn More"</h2>
                 <div class="learn-more-links">
-                    <A href="/theory" class="learn-more-card">
+                    <A href="/theory" attr:class="learn-more-card">
                         <h3>"Theory & Models"</h3>
                         <p>"Explore the physics behind the simulation\u{2014}from simple lumped capacitance to analytical eigenfunction solutions."</p>
                     </A>
-                    <A href="/about" class="learn-more-card">
+                    <A href="/about" attr:class="learn-more-card">
                         <h3>"About"</h3>
                         <p>"The story behind this project and why we built it."</p>
                     </A>

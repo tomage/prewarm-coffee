@@ -12,7 +12,7 @@ use crate::physics::{
 };
 use crate::storage::{display_temp as fmt_temp, SharedSettings};
 use crate::timing::SOLVE_THROTTLE_MS;
-use leptos::*;
+use leptos::prelude::*;
 
 /// Everything the four solves depend on, built once from the settings and
 /// grouped by solve so each solve can follow only its own inputs.
@@ -136,13 +136,13 @@ pub fn ComparePanel(#[prop(default = true)] with_controls: bool) -> impl IntoVie
     let (use_preheated, set_use_preheated) = panel.compare_use_preheated.split();
 
     // Derived geometry
-    let inner_radius_cm = create_memo(move |_| {
+    let inner_radius_cm = Memo::new(move |_| {
         let v = volume_ml.get();
         (3.0 * v / (4.0 * std::f64::consts::PI)).cbrt()
     });
     let outer_radius_cm =
-        create_memo(move |_| inner_radius_cm.get() + wall_thickness_mm.get() / 10.0);
-    let r_max_cm = create_memo(move |_| outer_radius_cm.get() * r_max_mult.get());
+        Memo::new(move |_| inner_radius_cm.get() + wall_thickness_mm.get() / 10.0);
+    let r_max_cm = Memo::new(move |_| outer_radius_cm.get() * r_max_mult.get());
 
     // Shell material from mug signal
     let shell_material = move || {
@@ -159,7 +159,7 @@ pub fn ComparePanel(#[prop(default = true)] with_controls: bool) -> impl IntoVie
         }
     };
 
-    let compare_inputs = create_memo(move |_| {
+    let compare_inputs = Memo::new(move |_| {
         let duration_s = duration_minutes.get() as f64 * 60.0;
         let num_snapshots = num_snapshots.get();
         CompareInputs {
@@ -206,14 +206,13 @@ pub fn ComparePanel(#[prop(default = true)] with_controls: bool) -> impl IntoVie
     let solve_inputs = throttled(compare_inputs, SOLVE_THROTTLE_MS);
     // One slice per solve: memo equality stops a control that only one solve
     // reads (e.g. series terms) from re-running the others.
-    let lumped_input = create_memo(move |_| solve_inputs.with(|inputs| inputs.lumped.clone()));
+    let lumped_input = Memo::new(move |_| solve_inputs.with(|inputs| inputs.lumped.clone()));
     let analytical_input =
-        create_memo(move |_| solve_inputs.with(|inputs| inputs.analytical.clone()));
-    let numerical_input =
-        create_memo(move |_| solve_inputs.with(|inputs| inputs.numerical.clone()));
+        Memo::new(move |_| solve_inputs.with(|inputs| inputs.analytical.clone()));
+    let numerical_input = Memo::new(move |_| solve_inputs.with(|inputs| inputs.numerical.clone()));
 
     // 1. Lumped Analytical
-    let lumped_analytical = create_memo(move |_| {
+    let lumped_analytical = Memo::new(move |_| {
         let start = js_sys::Date::now();
         let data = lumped_input.with(|mug| simulate_lumped_analytical(mug, MAX_SIMULATION_MINUTES));
         let series = CoolingDataPoint::coffee_series(&data);
@@ -224,7 +223,7 @@ pub fn ComparePanel(#[prop(default = true)] with_controls: bool) -> impl IntoVie
     });
 
     // 2. Lumped Numerical
-    let lumped_numerical = create_memo(move |_| {
+    let lumped_numerical = Memo::new(move |_| {
         let start = js_sys::Date::now();
         let data = lumped_input.with(|mug| simulate_lumped_numerical(mug, MAX_SIMULATION_MINUTES));
         let series = CoolingDataPoint::coffee_series(&data);
@@ -235,7 +234,7 @@ pub fn ComparePanel(#[prop(default = true)] with_controls: bool) -> impl IntoVie
     });
 
     // 3. Heat Equation Analytical
-    let heateq_analytical = create_memo(move |_| {
+    let heateq_analytical = Memo::new(move |_| {
         let start = js_sys::Date::now();
         let heat_snaps = analytical_input.with(|input| {
             let display_r_max = 10.0_f64 / 100.0; // 10cm
@@ -258,7 +257,7 @@ pub fn ComparePanel(#[prop(default = true)] with_controls: bool) -> impl IntoVie
     });
 
     // 4. Heat Equation Numerical
-    let heateq_numerical = create_memo(move |_| {
+    let heateq_numerical = Memo::new(move |_| {
         let start = js_sys::Date::now();
         let snaps = numerical_input.with(|input| {
             simulate_sphere_heat_numerical(&input.params, input.duration_s, input.num_snapshots)
@@ -272,8 +271,8 @@ pub fn ComparePanel(#[prop(default = true)] with_controls: bool) -> impl IntoVie
     });
 
     // Temperature range for Y-axis
-    let temp_top = create_memo(move |_| 100.0_f64);
-    let temp_bot = create_memo(move |_| {
+    let temp_top = Memo::new(move |_| 100.0_f64);
+    let temp_bot = Memo::new(move |_| {
         let lowest = lowest_plotted(
             &[
                 &lumped_analytical.get().data,
@@ -298,8 +297,8 @@ pub fn ComparePanel(#[prop(default = true)] with_controls: bool) -> impl IntoVie
             CHART_BOTTOM - ((temp - t_bot) / t_range * CHART_HEIGHT)
         }
     };
-    let threshold_y = create_memo(move |_| temp_to_y(min_drinkable_c.get()));
-    let room_y = create_memo(move |_| temp_to_y(room_temp_c.get()));
+    let threshold_y = Memo::new(move |_| temp_to_y(min_drinkable_c.get()));
+    let room_y = Memo::new(move |_| temp_to_y(room_temp_c.get()));
 
     // Temperature at midpoint for stats table
     let midpoint_temp = move |data: &[(f64, f64)]| -> f64 {

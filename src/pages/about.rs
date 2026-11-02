@@ -1,5 +1,5 @@
-use leptos::*;
-use leptos_router::A;
+use leptos::prelude::*;
+use leptos_router::components::A;
 
 #[component]
 pub fn AboutPage() -> impl IntoView {
@@ -54,7 +54,16 @@ pub fn AboutPage() -> impl IntoView {
             <section class="about-section">
                 <h2>"Version History"</h2>
                 <dl class="version-history">
-                    <dt>"v5 \u{2014} Current " <span class="version-date">"October 29, 2026"</span></dt>
+                    <dt>"v6 \u{2014} Current " <span class="version-date">"November 2, 2026"</span></dt>
+                    <dd>
+                        <ul>
+                            <li>"Upgraded to Leptos 0.8, the current release of the Rust web framework behind the site"</li>
+                            <li>"Back and forward between pages are instant, with no page reload, and keep each page's scroll position"</li>
+                            <li>"The heat-equation chart's axis no longer runs ahead of the curve while you drag a slider"</li>
+                            <li>"New tests guard cross-tab sync and switching tabs mid-drag, and a benchmark times how fast the chart settles during a drag"</li>
+                        </ul>
+                    </dd>
+                    <dt>"v5 " <span class="version-date">"October 29, 2026"</span></dt>
                     <dd>
                         <ul>
                             <li>"Physics corrections across all four solvers after a full review: energy conservation, lid-opening losses, evaporation and mug conductance"</li>

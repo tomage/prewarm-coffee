@@ -6,41 +6,42 @@ pub mod physics;
 pub mod storage;
 pub mod timing;
 
-use components::{
-    adopt_overlay_entry_on_load, overlay_popstate_handled, App, NavBar, PanelSettings,
-};
-use leptos::*;
-use leptos_router::*;
+#[cfg(test)]
+mod reactive_test;
+
+use components::{adopt_overlay_entry, overlay_popstate_handled, App, NavBar, PanelSettings};
+use leptos::prelude::*;
+use leptos_router::components::{Route, Router, Routes};
+use leptos_router::hooks::use_location;
+use leptos_router::path;
 use pages::{AboutPage, NotFoundPage, TheoryHeatEquationPage, TheoryLumpedPage, TheoryPage};
 use storage::{
-    flush_pending_save_on_pagehide, is_applying_external, listen_for_cross_tab_sync, schedule_save,
+    flush_pending_save_on_pagehide, listen_for_cross_tab_sync, needs_save, schedule_save,
     SharedSettings,
 };
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 
-/// Workaround for Leptos 0.6 router not re-rendering on browser back/forward.
-///
-/// On `popstate`, the router updates its internal location signal but doesn't
-/// always trigger the `<Routes>` component to re-evaluate which view to show.
-/// We work around this by forcing a full page reload on popstate, which
-/// re-initializes the WASM app at the correct URL. State is preserved via
-/// localStorage (SharedSettings), and the page's scroll position is restored
-/// after the reload (see `storage::prepare_popstate_reload`).
+/// Browser Back/forward. The router follows `popstate` itself; this listener
+/// runs first (it is registered before the router mounts) and handles what
+/// the router does not know about.
 ///
 /// A popstate that pops the mobile simulator overlay's own history entry is
-/// not a navigation: it closes the overlay and the page stays. A page loaded
-/// onto that entry (a reload with the overlay open) adopts it first.
-fn setup_popstate_reload() {
-    adopt_overlay_entry_on_load();
-    let closure = Closure::wrap(Box::new(move |_: web_sys::Event| {
+/// not a navigation: it closes the overlay, and the event stops here. The
+/// router never saw that entry pushed; letting it see the pop would count it
+/// as a Back in its own path stack. Any other popstate is a navigation:
+/// scroll restoration saves the page being left and restores the
+/// destination's position, and an overlay entry it lands on is adopted, as
+/// one a page loads onto is.
+fn setup_history_navigation() {
+    adopt_overlay_entry();
+    let closure = Closure::wrap(Box::new(move |ev: web_sys::Event| {
         if overlay_popstate_handled() {
+            ev.stop_immediate_propagation();
             return;
         }
-        storage::prepare_popstate_reload();
-        if let Some(window) = web_sys::window() {
-            let _ = window.location().reload();
-        }
+        adopt_overlay_entry();
+        storage::on_history_navigation();
     }) as Box<dyn Fn(web_sys::Event)>);
 
     if let Some(window) = web_sys::window() {
@@ -50,12 +51,12 @@ fn setup_popstate_reload() {
     closure.forget();
 }
 
-/// Tells scroll restoration about client-side route changes (link clicks).
+/// Tells scroll restoration about client-side route changes.
 /// Inside `<Router>`, which `use_location` needs.
 #[component]
 fn ScrollTracker() -> impl IntoView {
     let location = use_location();
-    create_effect(move |prev: Option<String>| {
+    Effect::new(move |prev: Option<String>| {
         let path = location.pathname.get();
         if prev.is_some_and(|prev| prev != path) {
             storage::on_route_change(&path);
@@ -64,60 +65,24 @@ fn ScrollTracker() -> impl IntoView {
     });
 }
 
-/// Root component with routing
+/// Root component: initializes the shared settings, persists them, and
+/// declares the routes.
 #[component]
 fn Root() -> impl IntoView {
-    view! {
-        <ErrorBoundary fallback=|errors| view! {
-            <main class="container">
-                <div class="error-container">
-                    <h2>"Something went wrong"</h2>
-                    <p>"The simulation encountered an error. Try refreshing the page or resetting to defaults."</p>
-                    <ul>
-                        {move || errors.get()
-                            .into_iter()
-                            .map(|(_, e)| view! { <li>{e.to_string()}</li> })
-                            .collect_view()
-                        }
-                    </ul>
-                    <button on:click=move |_| {
-                        // Clear stored settings and reload
-                        if let Some(storage) = web_sys::window()
-                            .and_then(|w| w.local_storage().ok().flatten())
-                        {
-                            let _ = storage.remove_item("prewarm_settings");
-                        }
-                        if let Some(window) = web_sys::window() {
-                            let _ = window.location().reload();
-                        }
-                    }>"Reset & Reload"</button>
-                </div>
-            </main>
-        }>
-            <RootInner/>
-        </ErrorBoundary>
-    }
-}
-
-/// Inner root that initializes settings and routes.
-/// Wrapped by ErrorBoundary so initialization panics are caught.
-#[component]
-fn RootInner() -> impl IntoView {
     // Shared settings singleton — same RwSignals for all routes
     let settings = SharedSettings::instance();
     // Created here so their signals belong to the app root: created inside a
     // panel, they would be disposed when the route unmounts that panel.
     PanelSettings::instance();
 
-    // Save to localStorage whenever any signal changes, debounced so a slider
-    // drag is one write (skip when applying changes received from another tab).
-    // The effect runs once on creation; skip that run so nothing is written
-    // until a setting changes, and stored data (possibly from a newer version)
-    // stays intact until then; the first save merges into it. A `?tab=` link
-    // selecting a different tab than the stored one is such a change.
-    create_effect(move |prev: Option<()>| {
-        settings.to_stored(); // track every setting
-        if prev.is_some() && !is_applying_external() {
+    // Save to localStorage when the settings differ from the last synced
+    // snapshot (loaded, received from another tab, or saved), debounced so a
+    // slider drag is one write. Values read from storage therefore never echo
+    // back, nothing is written at startup (stored data, possibly from a newer
+    // version, stays intact until a setting changes), and a `?tab=` link
+    // selecting a different tab than the stored one counts as a change.
+    Effect::new(move |_| {
+        if needs_save(&settings.to_stored()) {
             schedule_save();
         }
     });
@@ -131,13 +96,12 @@ fn RootInner() -> impl IntoView {
         <Router>
             <ScrollTracker/>
             <NavBar/>
-            <Routes>
-                <Route path="/" view=App/>
-                <Route path="/about" view=AboutPage/>
-                <Route path="/theory" view=TheoryPage/>
-                <Route path="/theory/lumped" view=TheoryLumpedPage/>
-                <Route path="/theory/heat-equation" view=TheoryHeatEquationPage/>
-                <Route path="/*" view=NotFoundPage/>
+            <Routes fallback=NotFoundPage>
+                <Route path=path!("/") view=App/>
+                <Route path=path!("/about") view=AboutPage/>
+                <Route path=path!("/theory") view=TheoryPage/>
+                <Route path=path!("/theory/lumped") view=TheoryLumpedPage/>
+                <Route path=path!("/theory/heat-equation") view=TheoryHeatEquationPage/>
             </Routes>
         </Router>
     }
@@ -148,7 +112,8 @@ fn RootInner() -> impl IntoView {
 pub fn main() {
     console_error_panic_hook::set_once();
     storage::setup_scroll_restoration();
-    setup_popstate_reload();
+    // Before mounting, so its popstate listener runs before the router's.
+    setup_history_navigation();
     mount_to_body(Root);
     storage::restore_scroll_on_load();
 }

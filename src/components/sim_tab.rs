@@ -3,7 +3,7 @@ use crate::components::{
     LumpedPanel, PanelSettings,
 };
 use crate::storage::SharedSettings;
-use leptos::*;
+use leptos::prelude::*;
 
 /// The simulator's tabs, each a model panel with its own extra controls.
 /// `SharedSettings::active_tab` stores the tab's key.
@@ -26,22 +26,22 @@ impl SimTab {
 
     /// The tab's model panel. `with_controls = false` leaves the controls to
     /// the caller.
-    pub fn panel(self, with_controls: bool) -> View {
+    pub fn panel(self, with_controls: bool) -> AnyView {
         match self {
-            Self::Lumped => view! { <LumpedPanel with_controls=with_controls/> }.into_view(),
+            Self::Lumped => view! { <LumpedPanel with_controls=with_controls/> }.into_any(),
             Self::HeatEquation => {
-                view! { <HeatEquationPanel with_controls=with_controls/> }.into_view()
+                view! { <HeatEquationPanel with_controls=with_controls/> }.into_any()
             }
-            Self::Compare => view! { <ComparePanel with_controls=with_controls/> }.into_view(),
+            Self::Compare => view! { <ComparePanel with_controls=with_controls/> }.into_any(),
         }
     }
 
     /// The tab's own controls, shown inside `MugControls` after the shared ones.
-    pub fn extra_controls(self, layout: ControlsLayout) -> View {
+    pub fn extra_controls(self, layout: ControlsLayout) -> AnyView {
         match self {
-            Self::Lumped => ().into_view(),
-            Self::HeatEquation => view! { <HeatEqExtraControls layout=layout/> }.into_view(),
-            Self::Compare => view! { <CompareExtraControls layout=layout/> }.into_view(),
+            Self::Lumped => ().into_any(),
+            Self::HeatEquation => view! { <HeatEqExtraControls layout=layout/> }.into_any(),
+            Self::Compare => view! { <CompareExtraControls layout=layout/> }.into_any(),
         }
     }
 
@@ -50,10 +50,10 @@ impl SimTab {
     pub fn reset_own_settings(self) {
         match self {
             Self::Lumped => {}
-            Self::HeatEquation => batch(|| {
+            Self::HeatEquation => {
                 PanelSettings::instance().reset();
                 SharedSettings::instance().use_near_wall.set(false);
-            }),
+            }
             Self::Compare => PanelSettings::instance().reset(),
         }
     }

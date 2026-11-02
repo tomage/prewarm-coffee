@@ -1,5 +1,5 @@
 use crate::storage::{display_temp as fmt_temp, format_minutes};
-use leptos::*;
+use leptos::prelude::*;
 
 // Chart layout constants (SVG coordinate space within viewBox="0 0 400 200")
 pub(crate) const CHART_LEFT: f64 = 40.0;
@@ -77,7 +77,7 @@ pub fn CoolingChart(
 ) -> impl IntoView {
     let display_temp = move |c: f64| fmt_temp(c, use_fahrenheit.get());
 
-    let temp_bot = create_memo(move |_| {
+    let temp_bot = Memo::new(move |_| {
         let lowest = lowest_plotted(
             &[
                 &cold_coffee.get(),
@@ -100,8 +100,8 @@ pub fn CoolingChart(
             CHART_BOTTOM - ((temp - t_bot) / t_range * CHART_HEIGHT)
         }
     };
-    let threshold_y = create_memo(move |_| temp_to_y(min_drinkable.get()));
-    let room_y = create_memo(move |_| temp_to_y(room_temp.get()));
+    let threshold_y = Memo::new(move |_| temp_to_y(min_drinkable.get()));
+    let room_y = Memo::new(move |_| temp_to_y(room_temp.get()));
 
     view! {
         <div class="chart-placeholder">

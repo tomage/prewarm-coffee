@@ -3,7 +3,8 @@ use crate::components::overlay_history::{
 };
 use crate::components::{ControlsLayout, MugControls, SimTab};
 use crate::storage::SharedSettings;
-use leptos::*;
+use leptos::prelude::*;
+use leptos::{ev, html};
 use wasm_bindgen::JsCast;
 
 /// Elements Tab can reach inside the overlay (the e2e spec uses the same).
@@ -69,13 +70,13 @@ pub fn SimulatorOverlay(
 ) -> impl IntoView {
     let settings = SharedSettings::instance();
 
-    let dialog_ref = create_node_ref::<html::Div>();
+    let dialog_ref = NodeRef::<html::Div>::new();
 
     // Open: lock body scroll, push the history entry Back pops, and move focus
     // into the dialog once it is in the document. Close: unlock and return
     // focus to the opener. Acts on transitions only, since the close paths can
     // set `show` to false more than once.
-    create_effect(move |was_open: Option<bool>| {
+    Effect::new(move |was_open: Option<bool>| {
         let open = show.get();
         if was_open.unwrap_or(false) != open {
             set_body_scroll_lock(open);
@@ -103,7 +104,7 @@ pub fn SimulatorOverlay(
     });
 
     // Done and Escape close here and step back over the history entry; the
-    // resulting popstate is consumed without a reload.
+    // popstate listener consumes the resulting popstate, so the page stays.
     let close = move || {
         set_show.set(false);
         pop_overlay_entry();

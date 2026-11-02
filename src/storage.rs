@@ -1,6 +1,6 @@
 use crate::physics::MugMaterial;
 use crate::timing::{Debounce, SAVE_DEBOUNCE_MS, SCROLL_SAVE_DEBOUNCE_MS};
-use leptos::*;
+use leptos::prelude::*;
 use serde::Serialize;
 use std::cell::{Cell, RefCell};
 use std::thread::LocalKey;
@@ -15,7 +15,7 @@ pub const SETTINGS_VERSION: u32 = 1;
 
 const TAB_IDS: [&str; 3] = ["lumped", "heat_equation", "compare"];
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, PartialEq)]
 pub struct StoredSettings {
     pub version: u32,
     pub material: String,
@@ -112,6 +112,18 @@ impl StoredSettings {
         }
     }
 
+    /// These settings as `SharedSettings::to_stored()` reports them once the
+    /// signals hold them: `version` reset to the current schema version and
+    /// `material` normalised (unknown strings read as ceramic). Every other
+    /// field is kept as is.
+    pub fn canonical(&self) -> StoredSettings {
+        StoredSettings {
+            version: SETTINGS_VERSION,
+            material: material_to_string(self.material_enum()),
+            ..self.clone()
+        }
+    }
+
     /// Clamp all values to physically valid ranges.
     ///
     /// Prevents invalid inputs from corrupted localStorage or manual edits
@@ -188,8 +200,8 @@ pub fn material_to_string(mat: MugMaterial) -> String {
 
 /// Shared reactive settings — singleton backed by a thread-local cache.
 ///
-/// Each field is an `RwSignal`, which is `Copy` in Leptos 0.6, making
-/// the whole struct `Copy`. Signals are created once (from localStorage)
+/// Each field is an `RwSignal`, which is `Copy`, making the whole struct
+/// `Copy`. Signals are created once (from localStorage)
 /// and reused across all route components.
 #[derive(Clone, Copy)]
 pub struct SharedSettings {
@@ -211,13 +223,41 @@ pub struct SharedSettings {
     pub use_near_wall: RwSignal<bool>,
 }
 
+/// The settings known to match localStorage. A setting change needs saving
+/// only when the current settings differ from it, so values read from storage
+/// (at startup or from another tab) are never written back.
+///
+/// Both sides are `SharedSettings::to_stored()` output, so fields this app
+/// does not own compare equal by construction.
+pub struct SyncedSnapshot {
+    last: Option<StoredSettings>,
+}
+
+impl SyncedSnapshot {
+    pub fn mark(&mut self, s: StoredSettings) {
+        self.last = Some(s);
+    }
+
+    /// True when nothing is marked yet or `current` differs from what is.
+    pub fn needs_save(&self, current: &StoredSettings) -> bool {
+        self.last.as_ref() != Some(current)
+    }
+}
+
+/// Record `s` as matching localStorage.
+pub fn mark_synced(s: StoredSettings) {
+    LAST_SYNCED.with(|l| l.borrow_mut().mark(s));
+}
+
+/// Whether `current` differs from the last synced settings.
+pub fn needs_save(current: &StoredSettings) -> bool {
+    LAST_SYNCED.with(|l| l.borrow().needs_save(current))
+}
+
 thread_local! {
     static SHARED_SETTINGS: Cell<Option<SharedSettings>> = const { Cell::new(None) };
-    /// Guard flag: when true, the save effect should skip writing to localStorage.
-    /// Held across `apply_external`: the batched `apply` runs the save effect
-    /// before returning, and a tab must not write back settings it just read
-    /// from storage (that would echo every change between tabs).
-    static APPLYING_EXTERNAL: Cell<bool> = const { Cell::new(false) };
+    /// The settings this tab last loaded, received from another tab, or saved.
+    static LAST_SYNCED: RefCell<SyncedSnapshot> = const { RefCell::new(SyncedSnapshot { last: None }) };
     /// Pending settings save; a burst of changes (a slider drag) becomes one write.
     static SAVE_DEBOUNCE: RefCell<Debounce> = RefCell::new(Debounce::new(SAVE_DEBOUNCE_MS));
 }
@@ -233,6 +273,7 @@ impl SharedSettings {
                 s
             } else {
                 let s = Self::from_stored(&load_settings());
+                mark_synced(untrack(|| s.to_stored()));
                 cell.set(Some(s));
                 s
             }
@@ -242,22 +283,22 @@ impl SharedSettings {
     /// Create a fresh set of signals holding the values in `saved`.
     fn from_stored(saved: &StoredSettings) -> Self {
         Self {
-            material: create_rw_signal(saved.material_enum()),
-            volume_ml: create_rw_signal(saved.volume_ml),
-            wall_thickness_mm: create_rw_signal(saved.wall_thickness_mm),
-            coffee_temp_c: create_rw_signal(saved.coffee_temp_c),
-            room_temp_c: create_rw_signal(saved.room_temp_c),
-            min_drinkable_c: create_rw_signal(saved.min_drinkable_c),
-            use_fahrenheit: create_rw_signal(saved.use_fahrenheit),
-            duration_minutes: create_rw_signal(saved.duration_minutes),
-            preheat_temp_c: create_rw_signal(saved.preheat_temp_c),
-            h_conv: create_rw_signal(saved.h_conv),
-            exposure_pct: create_rw_signal(saved.exposure_pct),
-            emissivity: create_rw_signal(saved.emissivity),
-            active_tab: create_rw_signal(saved.active_tab.clone()),
-            use_analytical_lumped: create_rw_signal(saved.use_analytical_lumped),
-            use_analytical_heat_eq: create_rw_signal(saved.use_analytical_heat_eq),
-            use_near_wall: create_rw_signal(saved.use_near_wall),
+            material: RwSignal::new(saved.material_enum()),
+            volume_ml: RwSignal::new(saved.volume_ml),
+            wall_thickness_mm: RwSignal::new(saved.wall_thickness_mm),
+            coffee_temp_c: RwSignal::new(saved.coffee_temp_c),
+            room_temp_c: RwSignal::new(saved.room_temp_c),
+            min_drinkable_c: RwSignal::new(saved.min_drinkable_c),
+            use_fahrenheit: RwSignal::new(saved.use_fahrenheit),
+            duration_minutes: RwSignal::new(saved.duration_minutes),
+            preheat_temp_c: RwSignal::new(saved.preheat_temp_c),
+            h_conv: RwSignal::new(saved.h_conv),
+            exposure_pct: RwSignal::new(saved.exposure_pct),
+            emissivity: RwSignal::new(saved.emissivity),
+            active_tab: RwSignal::new(saved.active_tab.clone()),
+            use_analytical_lumped: RwSignal::new(saved.use_analytical_lumped),
+            use_analytical_heat_eq: RwSignal::new(saved.use_analytical_heat_eq),
+            use_near_wall: RwSignal::new(saved.use_near_wall),
         }
     }
 
@@ -303,27 +344,26 @@ impl SharedSettings {
     }
 
     /// Apply `s` to the signals as one update: only fields whose value
-    /// differs are set (`f64` compared exactly), all inside one `batch`, so
-    /// dependent effects (solves, the save) run at most once per call.
+    /// differs are set (`f64` compared exactly). Effects run after the
+    /// current task, so dependent effects (solves, the save) run at most once
+    /// per call.
     pub fn apply(&self, s: &StoredSettings) {
-        batch(|| {
-            set_if_changed(self.material, s.material_enum());
-            set_if_changed(self.volume_ml, s.volume_ml);
-            set_if_changed(self.wall_thickness_mm, s.wall_thickness_mm);
-            set_if_changed(self.coffee_temp_c, s.coffee_temp_c);
-            set_if_changed(self.room_temp_c, s.room_temp_c);
-            set_if_changed(self.min_drinkable_c, s.min_drinkable_c);
-            set_if_changed(self.use_fahrenheit, s.use_fahrenheit);
-            set_if_changed(self.duration_minutes, s.duration_minutes);
-            set_if_changed(self.preheat_temp_c, s.preheat_temp_c);
-            set_if_changed(self.h_conv, s.h_conv);
-            set_if_changed(self.exposure_pct, s.exposure_pct);
-            set_if_changed(self.emissivity, s.emissivity);
-            set_if_changed(self.active_tab, s.active_tab.clone());
-            set_if_changed(self.use_analytical_lumped, s.use_analytical_lumped);
-            set_if_changed(self.use_analytical_heat_eq, s.use_analytical_heat_eq);
-            set_if_changed(self.use_near_wall, s.use_near_wall);
-        });
+        set_if_changed(self.material, s.material_enum());
+        set_if_changed(self.volume_ml, s.volume_ml);
+        set_if_changed(self.wall_thickness_mm, s.wall_thickness_mm);
+        set_if_changed(self.coffee_temp_c, s.coffee_temp_c);
+        set_if_changed(self.room_temp_c, s.room_temp_c);
+        set_if_changed(self.min_drinkable_c, s.min_drinkable_c);
+        set_if_changed(self.use_fahrenheit, s.use_fahrenheit);
+        set_if_changed(self.duration_minutes, s.duration_minutes);
+        set_if_changed(self.preheat_temp_c, s.preheat_temp_c);
+        set_if_changed(self.h_conv, s.h_conv);
+        set_if_changed(self.exposure_pct, s.exposure_pct);
+        set_if_changed(self.emissivity, s.emissivity);
+        set_if_changed(self.active_tab, s.active_tab.clone());
+        set_if_changed(self.use_analytical_lumped, s.use_analytical_lumped);
+        set_if_changed(self.use_analytical_heat_eq, s.use_analytical_heat_eq);
+        set_if_changed(self.use_near_wall, s.use_near_wall);
     }
 }
 
@@ -342,26 +382,19 @@ impl SharedSettings {
         });
     }
 
-    /// Change the material together with its typical emissivity, as one update.
+    /// Change the material together with its typical emissivity, as one
+    /// update (effects run after the current task).
     pub fn set_material(&self, material: MugMaterial) {
-        batch(|| {
-            self.material.set(material);
-            self.emissivity.set(material.emissivity());
-        });
+        self.material.set(material);
+        self.emissivity.set(material.emissivity());
     }
 }
 
 /// Set `signal` to `value` only when it differs, so unchanged fields notify no one.
-fn set_if_changed<T: PartialEq + 'static>(signal: RwSignal<T>, value: T) {
+fn set_if_changed<T: PartialEq + Send + Sync + 'static>(signal: RwSignal<T>, value: T) {
     if signal.with_untracked(|current| *current != value) {
         signal.set(value);
     }
-}
-
-/// Returns true while signals are being updated from settings another tab stored.
-/// The save effect should skip writing to localStorage in this case.
-pub fn is_applying_external() -> bool {
-    APPLYING_EXTERNAL.with(|c| c.get())
 }
 
 /// Set up cross-tab sync for shared settings.
@@ -406,7 +439,10 @@ pub fn listen_for_cross_tab_sync() {
 
 /// Follow the stored settings, unless this tab has an unsaved change: then
 /// that change is saved instead (other tabs follow it), so a sync never
-/// overwrites the user's latest edit with older stored values.
+/// overwrites the user's latest edit with older stored values. The cost is
+/// last-writer-wins: when two tabs edit within one save-debounce window, the
+/// tab whose save lands last overwrites the other's change; acceptable for one
+/// person with two tabs.
 fn sync_unless_pending(read: impl FnOnce() -> StoredSettings) {
     if !flush_pending_save() {
         apply_external(&read());
@@ -414,12 +450,19 @@ fn sync_unless_pending(read: impl FnOnce() -> StoredSettings) {
 }
 
 /// Apply settings read from storage (written by another tab) into the shared
-/// signals, suppressing the save effect to avoid a feedback loop.
+/// signals, marking them as synced so the save effect, which runs once this
+/// event's task has ended, finds nothing to save and does not echo them back.
+/// The mark is the canonical form of `stored`, as that is what `to_stored()`
+/// yields once the signals hold it.
+///
+/// A sync cannot land between a user edit and the save it schedules: the
+/// edit's effects (the save effect among them) run as microtasks right after
+/// the edit's event task, before any later task such as this `storage` event,
+/// so a pending edit is always seen by [`sync_unless_pending`].
 fn apply_external(stored: &StoredSettings) {
     let settings = SharedSettings::instance();
-    APPLYING_EXTERNAL.with(|c| c.set(true));
+    mark_synced(stored.canonical());
     settings.apply(stored);
-    APPLYING_EXTERNAL.with(|c| c.set(false));
 }
 
 /// Save the current settings once `SAVE_DEBOUNCE_MS` pass without another call.
@@ -487,8 +530,14 @@ pub fn flush_pending_save_on_pagehide() {
     closure.forget();
 }
 
+/// Write the current signals to localStorage and record them as synced.
+///
+/// The snapshot is marked even when the write failed or there is no storage:
+/// a failed write is not retried until the settings change again.
 fn save_current_settings() {
-    save_settings(&untrack(|| SharedSettings::instance().to_stored()));
+    let current = untrack(|| SharedSettings::instance().to_stored());
+    save_settings(&current);
+    mark_synced(current);
 }
 
 /// Attempts to get the browser's localStorage.
@@ -621,9 +670,6 @@ pub fn save_settings(settings: &StoredSettings) {
 
 /// Prefix of the per-path scroll key; the full key is [`scroll_key`].
 const SCROLL_KEY_PREFIX: &str = "prewarm_scroll:";
-/// Set just before the `popstate` reload workaround reloads the page: that
-/// reload is a Back/forward, so the page restores its position after it.
-const SCROLL_RESTORE_FLAG: &str = "prewarm_scroll_restore";
 /// How long after load the saved position is applied, so the page has rendered.
 const SCROLL_RESTORE_DELAY_MS: i32 = 50;
 
@@ -632,11 +678,11 @@ pub fn scroll_key(path: &str) -> String {
     format!("{SCROLL_KEY_PREFIX}{path}")
 }
 
-/// Whether a page load restores the saved position: only a Back/forward does
-/// (a browser `back_forward` load, or the reload the `popstate` workaround
-/// makes for one). A link, a typed URL or a plain reload opens at the top.
-pub fn should_restore_scroll(navigation_type: Option<&str>, popstate_reload: bool) -> bool {
-    popstate_reload || navigation_type == Some("back_forward")
+/// Whether a page load restores the saved position: only a Back/forward
+/// (`back_forward`) load does. A link, a typed URL or a plain reload opens at
+/// the top.
+pub fn should_restore_scroll(navigation_type: Option<&str>) -> bool {
+    navigation_type == Some("back_forward")
 }
 
 /// Parse a stored scroll position; anything but a finite, non-negative number
@@ -652,11 +698,14 @@ pub fn parse_scroll_y(stored: &str) -> Option<f64> {
 ///
 /// Every page's position is kept in session storage under [`scroll_key`] of
 /// its path. Scrolling saves it (debounced), leaving a page saves it (route
-/// change, `popstate`, `pagehide`), and arriving by a link stores the top.
+/// change, `popstate`, `pagehide`), arriving by a link stores the top, and
+/// arriving by Back/forward restores it.
 pub fn setup_scroll_restoration() {
     let window = window();
-    // The browser restores one position per history entry, which the
-    // popstate reload workaround defeats; the app restores per path itself.
+    // The browser restores one position per history entry, at `popstate`,
+    // while the page being left is still rendered (a shorter one clamps the
+    // position), and the simulator overlay's entry shares its page's URL. The
+    // app restores per path itself, once the router has rendered the page.
     if let Ok(history) = window.history() {
         let _ = history.set_scroll_restoration(web_sys::ScrollRestoration::Manual);
     }
@@ -680,14 +729,15 @@ thread_local! {
     static SCROLL_DEBOUNCE: RefCell<Debounce> =
         RefCell::new(Debounce::new(SCROLL_SAVE_DEBOUNCE_MS));
     static PENDING_SCROLL: RefCell<Option<(String, f64)>> = const { RefCell::new(None) };
-    /// Set once the `popstate` reload is under way. Until the page unloads,
-    /// the router may already show the destination (a shorter page clamps
-    /// `scrollY`, firing `scroll`), and nothing seen then belongs to any page.
-    static LEAVING: Cell<bool> = const { Cell::new(false) };
+    /// Set from a Back/forward `popstate` until the destination's saved
+    /// position is applied. Meanwhile the router swaps the pages (a shorter
+    /// page clamps `scrollY`, firing `scroll`) and reports the route change;
+    /// neither may overwrite the position about to be restored.
+    static RESTORING: Cell<bool> = const { Cell::new(false) };
 }
 
 fn record_scroll() {
-    if LEAVING.get() {
+    if RESTORING.get() {
         return;
     }
     let window = window();
@@ -718,24 +768,32 @@ fn session_storage() -> Option<web_sys::Storage> {
     window().session_storage().ok().flatten()
 }
 
-/// Save the position of the page being left before the `popstate` reload
-/// workaround reloads, stop recording until the page unloads, and mark that
-/// reload as one that restores.
-pub fn prepare_popstate_reload() {
+/// A Back/forward `popstate`: save the position of the page being left, and
+/// restore the destination's once the router has rendered it.
+///
+/// Call from a `popstate` listener that runs before the router's. The router
+/// renders the destination in the microtasks after the event, so by the next
+/// animation frame the page is in the DOM, and scrolling lays it out before
+/// the position is applied; nothing is painted in between.
+pub fn on_history_navigation() {
     flush_scroll_save();
-    LEAVING.set(true);
-    if let Some(storage) = session_storage() {
-        let _ = storage.set_item(SCROLL_RESTORE_FLAG, "1");
-    }
+    RESTORING.set(true);
+    // Until the restore, the page sits at the top. Left where it was, the
+    // position would be clamped to the destination's height, and that
+    // clamped value could pass for a restored one.
+    window().scroll_to_with_x_and_y(0.0, 0.0);
+    request_animation_frame(|| {
+        restore_scroll(&window().location().pathname().unwrap_or_default());
+        RESTORING.set(false);
+    });
 }
 
-/// A client-side route change (a link) to `path`: save the page being left,
-/// and store the top for `path`, where the link opens it.
+/// A client-side route change to `path`: save the page being left, and store
+/// the top for `path`, where a link opens it.
 ///
-/// Skipped while a `popstate` reload is under way: the router also follows
-/// that `popstate`, and the destination's saved position must survive the reload.
+/// Skipped during a Back/forward, which restores `path`'s saved position.
 pub fn on_route_change(path: &str) {
-    if LEAVING.get() {
+    if RESTORING.get() {
         return;
     }
     flush_scroll_save();
@@ -745,16 +803,8 @@ pub fn on_route_change(path: &str) {
 /// On load: restore the page's saved position if this load is a Back/forward,
 /// else store the top for it (where it opens). Call once after mount.
 pub fn restore_scroll_on_load() {
-    let popstate_reload = session_storage()
-        .and_then(|s| s.get_item(SCROLL_RESTORE_FLAG).ok().flatten())
-        .is_some();
-    if popstate_reload {
-        if let Some(storage) = session_storage() {
-            let _ = storage.remove_item(SCROLL_RESTORE_FLAG);
-        }
-    }
     let path = window().location().pathname().unwrap_or_default();
-    if should_restore_scroll(navigation_type().as_deref(), popstate_reload) {
+    if should_restore_scroll(navigation_type().as_deref()) {
         set_timeout(
             move || restore_scroll(&path),
             Duration::from_millis(SCROLL_RESTORE_DELAY_MS as u64),
@@ -787,6 +837,7 @@ fn navigation_type() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reactive_test::{test_owner, tick};
 
     #[test]
     fn test_display_temp() {
@@ -1139,31 +1190,33 @@ mod tests {
         assert!(s.min_drinkable_c < s.coffee_temp_c);
     }
 
-    /// Settings signals plus an effect that reads all of them, counting its runs.
+    /// Settings signals plus an effect that reads all of them, counting its
+    /// runs. The effect has run once when this returns.
     fn settings_with_run_counter() -> (SharedSettings, std::rc::Rc<Cell<u32>>) {
         let settings = SharedSettings::from_stored(&StoredSettings::default());
         let runs = std::rc::Rc::new(Cell::new(0));
         let counter = runs.clone();
-        create_effect(move |_| {
+        Effect::new(move |_| {
             settings.to_stored();
             counter.set(counter.get() + 1);
         });
+        tick();
         (settings, runs)
     }
 
     #[test]
     fn apply_skips_unchanged_fields() {
-        let rt = create_runtime();
+        let _owner = test_owner();
         let (settings, runs) = settings_with_run_counter();
         assert_eq!(runs.get(), 1);
         settings.apply(&StoredSettings::default());
+        tick();
         assert_eq!(runs.get(), 1);
-        rt.dispose();
     }
 
     #[test]
     fn apply_changes_once_for_many_fields() {
-        let rt = create_runtime();
+        let _owner = test_owner();
         let (settings, runs) = settings_with_run_counter();
         settings.apply(&StoredSettings {
             material: "glass".to_string(),
@@ -1173,13 +1226,13 @@ mod tests {
             active_tab: "compare".to_string(),
             ..Default::default()
         });
+        tick();
         assert_eq!(runs.get(), 2);
-        rt.dispose();
     }
 
     #[test]
     fn apply_sets_changed_values() {
-        let rt = create_runtime();
+        let _owner = test_owner();
         let settings = SharedSettings::from_stored(&StoredSettings::default());
         let target = StoredSettings {
             material: "stainless".to_string(),
@@ -1206,12 +1259,11 @@ mod tests {
             serde_json::to_value(settings.to_stored()).unwrap(),
             expected
         );
-        rt.dispose();
     }
 
     #[test]
     fn reset_restores_defaults_but_keeps_preferences() {
-        let rt = create_runtime();
+        let _owner = test_owner();
         let prefs = StoredSettings {
             volume_ml: 250.0,
             material: "glass".to_string(),
@@ -1232,20 +1284,70 @@ mod tests {
         assert!(!after.use_analytical_lumped);
         assert!(!after.use_analytical_heat_eq);
         assert!(after.use_near_wall);
-        rt.dispose();
     }
 
     #[test]
     fn set_material_updates_emissivity_in_one_run() {
-        let rt = create_runtime();
+        let _owner = test_owner();
         let (settings, runs) = settings_with_run_counter();
         settings.set_material(MugMaterial::StainlessSteel);
+        tick();
         assert_eq!(runs.get(), 2);
         assert_eq!(
             settings.emissivity.get_untracked(),
             MugMaterial::StainlessSteel.emissivity()
         );
-        rt.dispose();
+    }
+
+    #[test]
+    fn snapshot_needs_save_when_unmarked() {
+        let snap = SyncedSnapshot { last: None };
+        assert!(snap.needs_save(&StoredSettings::default()));
+    }
+
+    #[test]
+    fn snapshot_no_save_after_mark_same() {
+        let mut snap = SyncedSnapshot { last: None };
+        snap.mark(StoredSettings::default());
+        assert!(!snap.needs_save(&StoredSettings::default()));
+    }
+
+    #[test]
+    fn snapshot_needs_save_after_change() {
+        let mut snap = SyncedSnapshot { last: None };
+        snap.mark(StoredSettings::default());
+        let changed = StoredSettings {
+            volume_ml: 250.0,
+            ..Default::default()
+        };
+        assert!(snap.needs_save(&changed));
+    }
+
+    #[test]
+    fn clamped_load_needs_no_save() {
+        let _owner = test_owner();
+        let settings = SharedSettings::from_stored(&parse_settings(r#"{"volume_ml": 99999}"#));
+        mark_synced(settings.to_stored());
+        assert!(settings.volume_ml.get_untracked() < 99999.0);
+        assert!(!needs_save(&settings.to_stored()));
+    }
+
+    #[test]
+    fn external_apply_needs_no_save() {
+        let _owner = test_owner();
+        let settings = SharedSettings::from_stored(&StoredSettings::default());
+        mark_synced(settings.to_stored());
+        let incoming = StoredSettings {
+            material: "bogus".to_string(),
+            volume_ml: 250.0,
+            active_tab: "compare".to_string(),
+            version: SETTINGS_VERSION + 1,
+            ..Default::default()
+        };
+        assert!(needs_save(&incoming.canonical()));
+        mark_synced(incoming.canonical());
+        settings.apply(&incoming);
+        assert!(!needs_save(&settings.to_stored()));
     }
 
     #[test]
@@ -1257,11 +1359,10 @@ mod tests {
 
     #[test]
     fn restores_only_on_back_forward() {
-        assert!(should_restore_scroll(Some("back_forward"), false));
-        assert!(should_restore_scroll(Some("reload"), true));
-        assert!(!should_restore_scroll(Some("reload"), false));
-        assert!(!should_restore_scroll(Some("navigate"), false));
-        assert!(!should_restore_scroll(None, false));
+        assert!(should_restore_scroll(Some("back_forward")));
+        assert!(!should_restore_scroll(Some("reload")));
+        assert!(!should_restore_scroll(Some("navigate")));
+        assert!(!should_restore_scroll(None));
     }
 
     #[test]

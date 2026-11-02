@@ -7,8 +7,8 @@ use crate::physics::{
     CoolingDataPoint, MugParameters, MAX_SIMULATION_MINUTES,
 };
 use crate::storage::{c_to_f, SharedSettings};
-use leptos::*;
-use std::rc::Rc;
+use leptos::prelude::*;
+use std::sync::Arc;
 
 /// Timed simulation result: data points + how long computation took
 #[derive(Clone, PartialEq)]
@@ -56,7 +56,7 @@ pub fn LumpedPanel(#[prop(default = true)] with_controls: bool) -> impl IntoView
     let make_params = move |preheated: bool| settings.make_mug_params(preheated);
 
     // Timed simulation memos — compute data + elapsed time together
-    let timed_cold = create_memo(move |_| {
+    let timed_cold = Memo::new(move |_| {
         let params = make_params(false);
         if use_analytical.get() {
             timed_analytical(&params, MAX_SIMULATION_MINUTES)
@@ -65,7 +65,7 @@ pub fn LumpedPanel(#[prop(default = true)] with_controls: bool) -> impl IntoView
         }
     });
 
-    let timed_hot = create_memo(move |_| {
+    let timed_hot = Memo::new(move |_| {
         let params = make_params(true);
         if use_analytical.get() {
             timed_analytical(&params, MAX_SIMULATION_MINUTES)
@@ -75,23 +75,23 @@ pub fn LumpedPanel(#[prop(default = true)] with_controls: bool) -> impl IntoView
     });
 
     // Total computation time (both cold + hot runs)
-    let compute_time_ms = create_memo(move |_| {
+    let compute_time_ms = Memo::new(move |_| {
         let total = timed_cold.get().elapsed_ms + timed_hot.get().elapsed_ms;
         set_sim_ready.set(true);
         total
     });
 
     // Convert CoolingDataPoint data to (time_minutes, temp_c) tuples
-    let cold_coffee = create_memo(move |_| CoolingDataPoint::coffee_series(&timed_cold.get().data));
-    let hot_coffee = create_memo(move |_| CoolingDataPoint::coffee_series(&timed_hot.get().data));
-    let cold_mug = create_memo(move |_| CoolingDataPoint::mug_series(&timed_cold.get().data));
-    let hot_mug = create_memo(move |_| CoolingDataPoint::mug_series(&timed_hot.get().data));
-    let temp_top = create_memo(move |_| 100.0_f64);
+    let cold_coffee = Memo::new(move |_| CoolingDataPoint::coffee_series(&timed_cold.get().data));
+    let hot_coffee = Memo::new(move |_| CoolingDataPoint::coffee_series(&timed_hot.get().data));
+    let cold_mug = Memo::new(move |_| CoolingDataPoint::mug_series(&timed_cold.get().data));
+    let hot_mug = Memo::new(move |_| CoolingDataPoint::mug_series(&timed_hot.get().data));
+    let temp_top = Memo::new(move |_| 100.0_f64);
 
     // Bundled comparison metrics over the displayed duration. The run is
     // simulated for MAX_SIMULATION_MINUTES so changing the duration needs no
     // re-run, but crossings and averages must describe what the chart shows.
-    let metrics = create_memo(move |_| {
+    let metrics = Memo::new(move |_| {
         let duration = duration_minutes.get() as f64;
         compute_comparison(
             &series_up_to(&cold_coffee.get(), duration),
@@ -101,26 +101,26 @@ pub fn LumpedPanel(#[prop(default = true)] with_controls: bool) -> impl IntoView
     });
 
     // Crossing times for MobileSummaryBar
-    let crossing_time_cold = create_memo(move |_| metrics.get().crossing_time_cold);
-    let crossing_time_hot = create_memo(move |_| metrics.get().crossing_time_hot);
+    let crossing_time_cold = Memo::new(move |_| metrics.get().crossing_time_cold);
+    let crossing_time_hot = Memo::new(move |_| metrics.get().crossing_time_hot);
 
     // --- Profile chart signals ---
-    let (selected_time_idx, set_selected_time_idx) = create_signal(0_usize);
+    let (selected_time_idx, set_selected_time_idx) = signal(0_usize);
 
     // Derived: inner radius from volume (V = 4/3 π r³ → r = (3V/4π)^(1/3))
-    let inner_radius_cm = create_memo(move |_| {
+    let inner_radius_cm = Memo::new(move |_| {
         let v = volume_ml.get();
         (3.0 * v / (4.0 * std::f64::consts::PI)).cbrt()
     });
 
     // Derived: outer radius = inner + shell thickness
     let outer_radius_cm =
-        create_memo(move |_| inner_radius_cm.get() + wall_thickness_mm.get() / 10.0);
+        Memo::new(move |_| inner_radius_cm.get() + wall_thickness_mm.get() / 10.0);
 
     let chart_max_r_cm = 10.0_f64;
 
     // Y-axis range
-    let temp_max = create_memo(move |_| {
+    let temp_max = Memo::new(move |_| {
         let hi = coffee_temp_c
             .get()
             .max(preheat_temp_c.get())
@@ -129,7 +129,7 @@ pub fn LumpedPanel(#[prop(default = true)] with_controls: bool) -> impl IntoView
     });
     // Lower bound covers the lowest plotted value, which can be below room
     // once evaporation cools the coffee below room temperature.
-    let temp_min = create_memo(move |_| {
+    let temp_min = Memo::new(move |_| {
         let lo = coffee_temp_c
             .get()
             .min(preheat_temp_c.get())
@@ -160,7 +160,7 @@ pub fn LumpedPanel(#[prop(default = true)] with_controls: bool) -> impl IntoView
                 compute_time_ms=compute_time_ms.into()
                 sim_ready=Signal::from(sim_ready)
                 max_sim_minutes=MAX_SIMULATION_MINUTES as f64
-                footer=Rc::new(move || {
+                footer=Arc::new(move || {
                     // Current time index clamped to data length
                     let time_idx = move || selected_time_idx.get().min(hot_coffee.get().len().saturating_sub(1));
 
@@ -259,7 +259,7 @@ pub fn LumpedPanel(#[prop(default = true)] with_controls: bool) -> impl IntoView
                                 <rect
                                     x="50"
                                     y="20"
-                                    width=move || (inner_radius_cm.get() / chart_max_r_cm * PROFILE_W) as f64
+                                    width=move || inner_radius_cm.get() / chart_max_r_cm * PROFILE_W
                                     height="180"
                                     fill="var(--color-cold)"
                                     opacity="0.2"
@@ -269,7 +269,7 @@ pub fn LumpedPanel(#[prop(default = true)] with_controls: bool) -> impl IntoView
                                 <rect
                                     x=move || PROFILE_X + (inner_radius_cm.get() / chart_max_r_cm * PROFILE_W)
                                     y="20"
-                                    width=move || ((outer_radius_cm.get() - inner_radius_cm.get()) / chart_max_r_cm * PROFILE_W) as f64
+                                    width=move || (outer_radius_cm.get() - inner_radius_cm.get()) / chart_max_r_cm * PROFILE_W
                                     height="180"
                                     fill="var(--color-secondary)"
                                     opacity="0.4"
@@ -369,6 +369,7 @@ pub fn LumpedPanel(#[prop(default = true)] with_controls: bool) -> impl IntoView
                             </div>
                         </div>
                     }
+                    .into_any()
                 })
             />
         </div>

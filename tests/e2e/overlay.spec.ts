@@ -192,4 +192,25 @@ test.describe("mobile", () => {
     expect(page.url()).toBe(url);
     await expect(page.locator(".desktop-sim")).toBeVisible();
   });
+
+  test("forward_off_a_leftover_entry_navigates", async ({ page }) => {
+    await page.goto("/", { waitUntil: "networkidle" });
+    await openOverlay(page);
+
+    // Leave a leftover overlay entry under a link: [/, overlay, /theory].
+    await page.setViewportSize(DESKTOP);
+    await expect(page.locator(".simulator-overlay")).toHaveCount(0);
+    await page.locator('a[href="/theory"]').first().click();
+    await expect(page.locator("h1").first()).toHaveText("Theory");
+
+    // Back lands on the leftover entry (home); Forward from it is a real
+    // navigation, not the overlay's entry being popped.
+    await page.goBack();
+    await expect(page.locator("h1").first()).toHaveText("Prewarm");
+    await expect.poll(() => page.evaluate(() => history.state?.overlay === true)).toBe(true);
+
+    await page.goForward();
+    await expect(page.locator("h1").first()).toHaveText("Theory");
+    expect(page.url()).toMatch(/\/theory\/?$/);
+  });
 });

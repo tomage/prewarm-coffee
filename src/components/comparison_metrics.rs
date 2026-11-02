@@ -1,6 +1,6 @@
 use crate::physics::{extra_time, ComparisonData, ExtraTime};
 use crate::storage::{display_temp as fmt_temp, format_minutes};
-use leptos::*;
+use leptos::prelude::*;
 
 #[component]
 pub fn ComparisonMetrics(

@@ -1,6 +1,6 @@
 use crate::components::LumpedPanel;
-use leptos::*;
-use leptos_router::A;
+use leptos::prelude::*;
+use leptos_router::components::A;
 
 #[component]
 pub fn TheoryLumpedPage() -> impl IntoView {

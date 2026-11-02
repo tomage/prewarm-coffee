@@ -5,7 +5,7 @@ use crate::physics::MugMaterial;
 use crate::storage::{
     c_to_f, display_temp as fmt_temp, f_to_c, material_to_string, SharedSettings,
 };
-use leptos::*;
+use leptos::prelude::*;
 use std::cell::Cell;
 
 thread_local! {
@@ -47,7 +47,7 @@ impl ControlsLayout {
 ///
 /// `children` are the active panel's own controls: after Duration in the
 /// flat layout, in the Advanced group in the accordion layout. `on_reset`
-/// runs in the same batch as the shared reset.
+/// runs in the same update as the shared reset.
 #[component]
 pub fn MugControls(
     settings: SharedSettings,
@@ -309,14 +309,13 @@ pub fn MugControls(
             <button
                 class="reset-button"
                 on:click=move |_| {
-                    // One batch: the shared reset and the panel's own reset
-                    // land as a single update, so dependents re-solve once.
-                    batch(|| {
-                        settings.reset_to_defaults();
-                        if let Some(cb) = on_reset {
-                            cb.call(());
-                        }
-                    });
+                    // The shared reset and the panel's own reset land as a
+                    // single update (effects run after this handler), so
+                    // dependents re-solve once.
+                    settings.reset_to_defaults();
+                    if let Some(cb) = on_reset {
+                        cb.run(());
+                    }
                 }
             >
                 "Reset to defaults"
@@ -349,7 +348,7 @@ pub fn MugControls(
                 {reset_button()}
             </div>
         }
-        .into_view(),
+        .into_any(),
         ControlsLayout::Accordion => view! {
             <div class="controls-accordion">
                 <AccordionGroup title="Mug Properties">
@@ -379,6 +378,6 @@ pub fn MugControls(
                 </div>
             </div>
         }
-        .into_view(),
+        .into_any(),
     }
 }

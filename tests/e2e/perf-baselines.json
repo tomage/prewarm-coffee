@@ -22,5 +22,17 @@
   },
   "/theory/lumped?solver=numerical": {
     "median_ms": 25
+  },
+  "interaction:compare": {
+    "median_ms": 139,
+    "long_task_ms": 0
+  },
+  "interaction:heat_equation": {
+    "median_ms": 117,
+    "long_task_ms": 0
+  },
+  "interaction:lumped": {
+    "median_ms": 40,
+    "long_task_ms": 0
   }
 }

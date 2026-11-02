@@ -7,8 +7,8 @@ import { test, expect, type Page } from "@playwright/test";
 // ---------------------------------------------------------------------------
 
 const DESKTOP = { width: 1280, height: 800 };
-// Back reloads the page (Leptos 0.6 popstate workaround) and the position is
-// restored once the app has rendered, so a few px of layout drift are allowed.
+// Back restores the position once the router has rendered the destination,
+// so a few px of layout drift are allowed.
 const TOLERANCE = 50;
 
 test.use({ viewport: DESKTOP });
@@ -84,7 +84,7 @@ test("back_from_a_longer_page_keeps_destination_position", async ({ page }) => {
   await waitForRoute(page, "Theory: Lumped Capacitance");
 
   // Far past theory's maximum scroll (~480 px): Back must not save the
-  // clamped position under theory while the page reloads.
+  // clamped position under theory while the router swaps the pages.
   await scrollTo(page, 3000);
 
   await page.goBack();

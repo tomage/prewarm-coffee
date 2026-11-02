@@ -1,6 +1,6 @@
 use crate::components::HeatEquationPanel;
-use leptos::*;
-use leptos_router::A;
+use leptos::prelude::*;
+use leptos_router::components::A;
 
 #[component]
 pub fn TheoryHeatEquationPage() -> impl IntoView {

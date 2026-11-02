@@ -1,6 +1,6 @@
 use crate::components::{ComparisonMetrics, CoolingChart, SolverToggle};
 use crate::physics::ComparisonData;
-use leptos::*;
+use leptos::prelude::*;
 
 /// Reusable wrapper around SolverToggle + ComparisonMetrics + CoolingChart.
 ///
@@ -35,8 +35,8 @@ pub fn SimulationResults(
     #[prop(optional)] footer: Option<ChildrenFn>,
 ) -> impl IntoView {
     // Derive crossing times from metrics for CoolingChart
-    let crossing_cold = create_memo(move |_| metrics.get().crossing_time_cold);
-    let crossing_hot = create_memo(move |_| metrics.get().crossing_time_hot);
+    let crossing_cold = Memo::new(move |_| metrics.get().crossing_time_cold);
+    let crossing_hot = Memo::new(move |_| metrics.get().crossing_time_hot);
 
     view! {
         <div class="temperature-display">

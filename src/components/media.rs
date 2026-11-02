@@ -1,4 +1,4 @@
-use leptos::*;
+use leptos::prelude::*;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
@@ -14,7 +14,7 @@ pub fn use_media_query(query: &'static str) -> Signal<bool> {
         .match_media(query)
         .expect("matchMedia accepts the query")
         .expect("the browser supports matchMedia");
-    let (matches, set_matches) = create_signal(list.matches());
+    let (matches, set_matches) = signal(list.matches());
 
     let on_change = {
         let list = list.clone();
@@ -22,12 +22,17 @@ pub fn use_media_query(query: &'static str) -> Signal<bool> {
     };
     list.add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref())
         .expect("a MediaQueryList accepts a change listener");
+    // Held by the owner (thread-local storage: browser objects are not
+    // `Send`) so the `Send + Sync` cleanup can reach them. Cleanups run
+    // before the owner drops its stored values, so the listener is removed
+    // before the closure is dropped: a change event reaching a dropped
+    // closure throws.
+    let listener = StoredValue::new_local((list, on_change));
     on_cleanup(move || {
-        // Remove the listener before dropping the closure: a change event
-        // reaching a dropped closure throws.
-        let _ =
-            list.remove_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
-        drop(on_change);
+        listener.with_value(|(list, on_change)| {
+            let _ = list
+                .remove_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
+        });
     });
 
     matches.into()

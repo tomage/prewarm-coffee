@@ -9,14 +9,23 @@ license = "AGPL-3.0-only"
 crate-type = ["cdylib"]
 
 [dependencies]
-leptos = { version = "0.6", features = ["csr"] }
-leptos_router = { version = "0.6", features = ["csr"] }
+leptos = { version = "0.8.23", features = ["csr"] }
+# Client-side routing is the router's default mode; it has no `csr` feature.
+# Pinned to the resolved 0.8.17: leptos_router versions do not track leptos's
+# (leptos is 0.8.23), so the two numbers differ on purpose.
+leptos_router = "0.8.17"
 console_error_panic_hook = "0.1"
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Storage", "StorageEvent", "Window", "Document", "History", "ScrollRestoration", "EventTarget", "Navigator", "Element", "MouseEvent", "DomRect", "DomTokenList", "HtmlElement", "MediaQueryList", "KeyboardEvent", "NodeList", "DomRectList", "Performance"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+[dev-dependencies]
+# Unit tests that count effect runs drive the reactive executor themselves:
+# effects run on the executor's next tick, and `cargo test` has no browser
+# event loop. The futures executor can be polled synchronously until idle.
+any_spawner = { version = "0.3", features = ["futures-executor"] }
 
 [profile.release]
 lto = true

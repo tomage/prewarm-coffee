@@ -29,7 +29,7 @@ pub use media::{use_media_query, MOBILE_QUERY};
 pub use mobile_summary::MobileSummaryBar;
 pub use mug_controls::{ControlsLayout, MugControls};
 pub use nav_bar::NavBar;
-pub use overlay_history::{adopt_overlay_entry_on_load, overlay_popstate_handled};
+pub use overlay_history::{adopt_overlay_entry, overlay_popstate_handled};
 pub use panel_settings::PanelSettings;
 pub use profile_chart::ProfileChart;
 pub use sim_tab::SimTab;

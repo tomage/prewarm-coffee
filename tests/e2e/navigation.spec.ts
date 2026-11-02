@@ -3,8 +3,7 @@ import { test, expect } from "@playwright/test";
 // ---------------------------------------------------------------------------
 // Navigation test — exercises the full site graph using both in-page links
 // and the browser back/forward buttons, verifying that client-side routing
-// works correctly. Back/forward triggers a full page reload (popstate
-// workaround for Leptos 0.6), so we use generous timeouts.
+// works correctly.
 // ---------------------------------------------------------------------------
 
 /** Wait for the page to show the expected h1 text (exact match). */

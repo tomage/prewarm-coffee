@@ -11,9 +11,8 @@ use crate::physics::{
 };
 use crate::storage::SharedSettings;
 use crate::timing::SOLVE_THROTTLE_MS;
-use leptos::*;
-use std::cell::Cell;
-use std::rc::Rc;
+use leptos::prelude::*;
+use std::sync::Arc;
 
 /// Everything one heat simulation run depends on. The hot and cold runs
 /// differ only in `shell_temp`.
@@ -217,22 +216,23 @@ pub fn HeatEquationPanel(#[prop(default = true)] with_controls: bool) -> impl In
     let (use_analytical, set_use_analytical, sim_ready, set_sim_ready) =
         create_solver_signals(settings.use_analytical_heat_eq);
 
-    // Track compute time for display — Cells written inside memos, read by effect
-    let (compute_time_ms, set_compute_time_ms) = create_signal(0.0_f64);
-    let sim_time = Rc::new(Cell::new(0.0_f64));
-    let sim_cold_time = Rc::new(Cell::new(0.0_f64));
+    // Track compute time for display: each solve memo records its own time
+    // (non-reactively), and the effect below sums them.
+    let (compute_time_ms, set_compute_time_ms) = signal(0.0_f64);
+    let sim_time = StoredValue::new(0.0_f64);
+    let sim_cold_time = StoredValue::new(0.0_f64);
 
-    let inner_radius_cm = create_memo(move |_| inner_radius_for_volume(volume_ml.get()));
+    let inner_radius_cm = Memo::new(move |_| inner_radius_for_volume(volume_ml.get()));
 
     // Derived: outer radius = inner + shell thickness
     let outer_radius_cm =
-        create_memo(move |_| inner_radius_cm.get() + shell_thickness_mm.get() / 10.0);
+        Memo::new(move |_| inner_radius_cm.get() + shell_thickness_mm.get() / 10.0);
 
     // Chart radial extent — fixed at 10 cm for consistent display
-    let chart_max_r_cm = create_memo(move |_| 10.0_f64);
+    let chart_max_r_cm = Memo::new(move |_| 10.0_f64);
 
     // Simulation domain extent — can be larger than chart display
-    let r_max_cm = create_memo(move |_| outer_radius_cm.get() * r_max_mult.get());
+    let r_max_cm = Memo::new(move |_| outer_radius_cm.get() * r_max_mult.get());
 
     // Helper: build HeatMaterial from the current mug material signal
     let shell_material_from_mug = move || {
@@ -261,7 +261,7 @@ pub fn HeatEquationPanel(#[prop(default = true)] with_controls: bool) -> impl In
     };
 
     // Hot mug starts at the preheat temperature, cold mug at room temperature.
-    let run_inputs = create_memo(move |_| HeatRunInputs {
+    let run_inputs = Memo::new(move |_| HeatRunInputs {
         hot: sim_input(shell_temp_c.get()),
         cold: sim_input(room_temp_c.get()),
     });
@@ -270,67 +270,62 @@ pub fn HeatEquationPanel(#[prop(default = true)] with_controls: bool) -> impl In
     let solve_inputs = throttled(run_inputs, SOLVE_THROTTLE_MS);
     // One slice per solve: memo equality stops a change that only affects one
     // run (e.g. the preheat temperature) from re-running the other.
-    let hot_input = create_memo(move |_| solve_inputs.with(|inputs| inputs.hot.clone()));
-    let cold_input = create_memo(move |_| solve_inputs.with(|inputs| inputs.cold.clone()));
+    let hot_input = Memo::new(move |_| solve_inputs.with(|inputs| inputs.hot.clone()));
+    let cold_input = Memo::new(move |_| solve_inputs.with(|inputs| inputs.cold.clone()));
 
     // Hot mug simulation
-    let simulation_data = {
-        let timing = sim_time.clone();
-        create_memo(move |_| {
-            let start = js_sys::Date::now();
-            let result = run_heat_sim(hot_input.get());
-            timing.set(js_sys::Date::now() - start);
-            result
-        })
-    };
+    let simulation_data = Memo::new(move |_| {
+        let start = js_sys::Date::now();
+        let result = run_heat_sim(hot_input.get());
+        sim_time.set_value(js_sys::Date::now() - start);
+        result
+    });
 
     // Cold mug simulation
-    let simulation_data_cold = {
-        let timing = sim_cold_time.clone();
-        create_memo(move |_| {
-            let start = js_sys::Date::now();
-            let result = run_heat_sim(cold_input.get());
-            timing.set(js_sys::Date::now() - start);
-            result
-        })
-    };
+    let simulation_data_cold = Memo::new(move |_| {
+        let start = js_sys::Date::now();
+        let result = run_heat_sim(cold_input.get());
+        sim_cold_time.set_value(js_sys::Date::now() - start);
+        result
+    });
 
-    // Read timing from Cells written by simulation memos (memos run before effects in Leptos 0.6)
-    create_effect(move |_| {
+    // Reading the memos first runs any pending solve, so the recorded times
+    // belong to the data this effect has just read.
+    Effect::new(move |_| {
         let _ = simulation_data.get();
         let _ = simulation_data_cold.get();
-        let total = sim_time.get() + sim_cold_time.get();
+        let total = sim_time.get_value() + sim_cold_time.get_value();
         set_compute_time_ms.set(total);
         set_sim_ready.set(true);
     });
 
-    let liquid_avg_temps = create_memo(move |_| liquid_average_temperature(&simulation_data.get()));
+    let liquid_avg_temps = Memo::new(move |_| liquid_average_temperature(&simulation_data.get()));
 
-    let shell_avg_temps = create_memo(move |_| shell_average_temperature(&simulation_data.get()));
+    let shell_avg_temps = Memo::new(move |_| shell_average_temperature(&simulation_data.get()));
 
     let liquid_avg_temps_cold =
-        create_memo(move |_| liquid_average_temperature(&simulation_data_cold.get()));
+        Memo::new(move |_| liquid_average_temperature(&simulation_data_cold.get()));
 
     let shell_avg_temps_cold =
-        create_memo(move |_| shell_average_temperature(&simulation_data_cold.get()));
+        Memo::new(move |_| shell_average_temperature(&simulation_data_cold.get()));
 
     // Near-wall liquid temperatures (outer 10% of liquid radius)
     let wall_fraction = 0.10;
     let liquid_wall_temps =
-        create_memo(move |_| liquid_near_wall_temperature(&simulation_data.get(), wall_fraction));
-    let liquid_wall_temps_cold = create_memo(move |_| {
+        Memo::new(move |_| liquid_near_wall_temperature(&simulation_data.get(), wall_fraction));
+    let liquid_wall_temps_cold = Memo::new(move |_| {
         liquid_near_wall_temperature(&simulation_data_cold.get(), wall_fraction)
     });
 
     // Active liquid temps — switches between avg and near-wall based on toggle
-    let active_liquid_temps = create_memo(move |_| {
+    let active_liquid_temps = Memo::new(move |_| {
         if use_near_wall.get() {
             liquid_wall_temps.get()
         } else {
             liquid_avg_temps.get()
         }
     });
-    let active_liquid_temps_cold = create_memo(move |_| {
+    let active_liquid_temps_cold = Memo::new(move |_| {
         if use_near_wall.get() {
             liquid_wall_temps_cold.get()
         } else {
@@ -339,15 +334,16 @@ pub fn HeatEquationPanel(#[prop(default = true)] with_controls: bool) -> impl In
     });
 
     // Convert PDE data (time_seconds, temp) to (time_minutes, temp) for charts
-    let cold_coffee_chart =
-        create_memo(move |_| seconds_to_minutes(&active_liquid_temps_cold.get()));
-    let hot_coffee_chart = create_memo(move |_| seconds_to_minutes(&active_liquid_temps.get()));
-    let cold_mug_chart = create_memo(move |_| seconds_to_minutes(&shell_avg_temps_cold.get()));
-    let hot_mug_chart = create_memo(move |_| seconds_to_minutes(&shell_avg_temps.get()));
-    let temp_top_chart = create_memo(move |_| liquid_temp_c.get());
+    let cold_coffee_chart = Memo::new(move |_| seconds_to_minutes(&active_liquid_temps_cold.get()));
+    let hot_coffee_chart = Memo::new(move |_| seconds_to_minutes(&active_liquid_temps.get()));
+    let cold_mug_chart = Memo::new(move |_| seconds_to_minutes(&shell_avg_temps_cold.get()));
+    let hot_mug_chart = Memo::new(move |_| seconds_to_minutes(&shell_avg_temps.get()));
+    // The axis top comes from the throttled inputs the plotted data was solved
+    // from, so during a drag the axis and the lines move together.
+    let temp_top_chart = Memo::new(move |_| hot_input.with(|input| input.liquid_temp));
 
     // Bundled comparison metrics (times in minutes for display)
-    let metrics = create_memo(move |_| {
+    let metrics = Memo::new(move |_| {
         compute_comparison(
             &cold_coffee_chart.get(),
             &hot_coffee_chart.get(),
@@ -355,18 +351,18 @@ pub fn HeatEquationPanel(#[prop(default = true)] with_controls: bool) -> impl In
         )
     });
 
-    let current_snapshot = create_memo(move |_| {
+    let current_snapshot = Memo::new(move |_| {
         let data = simulation_data.get();
         let idx = selected_time_idx.get().min(data.len() - 1);
         data[idx].clone()
     });
 
-    let initial_snapshot = create_memo(move |_| {
+    let initial_snapshot = Memo::new(move |_| {
         let data = simulation_data.get();
         data[0].clone()
     });
 
-    let temp_max = create_memo(move |_| {
+    let temp_max = Memo::new(move |_| {
         let hi = liquid_temp_c
             .get()
             .max(shell_temp_c.get())
@@ -375,7 +371,7 @@ pub fn HeatEquationPanel(#[prop(default = true)] with_controls: bool) -> impl In
     });
     // Lower bound covers the lowest plotted value, which can be below room
     // once evaporation cools the coffee below room temperature.
-    let temp_min = create_memo(move |_| {
+    let temp_min = Memo::new(move |_| {
         let lowest_snapshot = simulation_data.with(|snaps| {
             snaps
                 .iter()
@@ -418,7 +414,7 @@ pub fn HeatEquationPanel(#[prop(default = true)] with_controls: bool) -> impl In
                 compute_time_ms=compute_time_ms.into()
                 sim_ready=Signal::from(sim_ready)
                 max_sim_minutes=MAX_SIMULATION_MINUTES as f64
-                footer=Rc::new(move || view! {
+                footer=Arc::new(move || view! {
                     <ProfileChart
                         current_snapshot=current_snapshot
                         initial_snapshot=initial_snapshot
@@ -434,7 +430,7 @@ pub fn HeatEquationPanel(#[prop(default = true)] with_controls: bool) -> impl In
                         selected_time_idx=selected_time_idx
                         set_selected_time_idx=set_selected_time_idx
                     />
-                }.into())
+                }.into_any())
             >
                 <div class="solver-toggle">
                     <button
